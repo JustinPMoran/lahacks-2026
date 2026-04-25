@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import math
 import os
 import subprocess
 import sys
@@ -47,6 +48,110 @@ FLOOR_MAPS = [
     {"label": "LEVEL 3", "detail": "Upper Bowl", "asset": "level_3_upper_bowl.png", "color": AMBER},
     {"label": "LEVEL 4", "detail": "Concourse", "asset": "level_4_concourse_exterior.png", "color": (255, 85, 180)},
 ]
+
+
+# --- Tactical overlay -------------------------------------------------------
+# Static per-floor scenario for the minimap. Positions are normalized 0..1
+# over the floor map image so they scale to whatever pixel rect we draw into.
+COLOR_SELF     = (255, 230, 0)
+COLOR_TEAMMATE = (0, 200, 255)
+COLOR_TRAPPED  = (255, 40, 60)
+COLOR_HAZARD   = (255, 120, 0)
+COLOR_EVENT    = (200, 110, 255)
+COLOR_NODE     = (0, 255, 200)
+COLOR_LINK     = (0, 110, 95)        # faint mesh-link line
+COLOR_EXIT     = (60, 255, 120)
+COLOR_RESCUE   = (255, 80, 90)
+COLOR_EVAC     = (60, 255, 120)
+COLOR_HOP      = (255, 230, 0)       # mesh nodes used by the active rescue path
+HIT_RADIUS_NORM = 0.045              # click hit-test radius, normalized
+
+FLOOR_ENTITIES = {
+    # Level 1: clean slate — just the team + you. The user demos by tagging
+    # hazards / trapped / events on the map.
+    "level_1_stadium_floor.png": {
+        "self": {"x": 0.46, "y": 0.55, "label": "YOU"},
+        "teammates": [
+            {"x": 0.30, "y": 0.50, "label": "BRAVO-2", "hr": 102},
+            {"x": 0.62, "y": 0.62, "label": "BRAVO-3", "hr": 96},
+        ],
+        "trapped": [],
+        "hazards": [],
+        "nodes": [
+            {"x": 0.20, "y": 0.30},
+            {"x": 0.80, "y": 0.70},
+        ],
+        "links": [(0, 1)],
+        "exits": [
+            {"x": 0.04, "y": 0.55, "label": "W"},
+            {"x": 0.96, "y": 0.55, "label": "E"},
+        ],
+    },
+    "level_2_lower_bowl.png": {
+        "self": {"x": 0.50, "y": 0.50, "label": "YOU"},
+        "teammates": [
+            {"x": 0.22, "y": 0.30, "label": "BRAVO-2", "hr": 110},
+            {"x": 0.78, "y": 0.70, "label": "BRAVO-3", "hr": 92},
+        ],
+        "trapped": [
+            {"x": 0.16, "y": 0.78, "label": "VIC-1", "status": "PRONE"},
+            {"x": 0.86, "y": 0.30, "label": "VIC-2", "status": "MOVING"},
+        ],
+        "hazards": [
+            {"x": 0.10, "y": 0.50, "type": "FIRE"},
+        ],
+        "nodes": [
+            {"x": 0.15, "y": 0.20},
+            {"x": 0.85, "y": 0.20},
+            {"x": 0.50, "y": 0.85},
+        ],
+        "links": [(0, 1), (0, 2), (1, 2)],
+        "exits": [
+            {"x": 0.04, "y": 0.50, "label": "W"},
+            {"x": 0.96, "y": 0.50, "label": "E"},
+            {"x": 0.50, "y": 0.04, "label": "N"},
+        ],
+    },
+    "level_3_upper_bowl.png": {
+        "self": {"x": 0.32, "y": 0.55, "label": "YOU"},
+        "teammates": [
+            {"x": 0.70, "y": 0.40, "label": "BRAVO-2", "hr": 88},
+        ],
+        "trapped": [
+            {"x": 0.22, "y": 0.82, "label": "VIC-3", "status": "PRONE"},
+        ],
+        "hazards": [],
+        "nodes": [
+            {"x": 0.20, "y": 0.30},
+            {"x": 0.80, "y": 0.70},
+        ],
+        "links": [(0, 1)],
+        "exits": [
+            {"x": 0.50, "y": 0.04, "label": "N"},
+            {"x": 0.50, "y": 0.96, "label": "S"},
+        ],
+    },
+    "level_4_concourse_exterior.png": {
+        "self": {"x": 0.52, "y": 0.85, "label": "YOU"},
+        "teammates": [
+            {"x": 0.20, "y": 0.50, "label": "BRAVO-2", "hr": 84},
+        ],
+        "trapped": [
+            {"x": 0.30, "y": 0.30, "label": "VIC-4", "status": "STILL"},
+        ],
+        "hazards": [],
+        "nodes": [
+            {"x": 0.20, "y": 0.50},
+            {"x": 0.80, "y": 0.50},
+        ],
+        "links": [(0, 1)],
+        "exits": [
+            {"x": 0.50, "y": 0.96, "label": "MAIN"},
+            {"x": 0.05, "y": 0.05, "label": "NW"},
+            {"x": 0.95, "y": 0.05, "label": "NE"},
+        ],
+    },
+}
 
 
 @dataclass
@@ -373,6 +478,16 @@ class RuViewApp:
         self.camera_surface = pygame.Surface((CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT))
         self.camera_surface.fill((0, 0, 0))
         self.floor_surfaces = self.load_floor_surfaces()
+        # Tactical overlay state
+        self.sim_start = time.perf_counter()
+        self.selected_target = None        # {"floor_idx": int, "kind": "trapped"|"teammates", "idx": int}
+        self.expanded_map_rect: pygame.Rect | None = None
+        self.preview_map_rect: pygame.Rect | None = None
+        # User-tagged markers (per-floor). Each bucket is appended to the static seed at render time.
+        self.user_tags = {
+            i: {"trapped": [], "hazards": [], "events": []} for i in range(len(FLOOR_MAPS))
+        }
+        self.tag_mode: str | None = None    # None | "trapped" | "hazards" | "events"
         if os.environ.get("RUVIEW_AUTOSTART_STREAM", "0") == "1":
             self.camera_stream.start()
 
@@ -416,8 +531,14 @@ class RuViewApp:
             self.camera_stream.toggle()
         elif key == pygame.K_m:
             self.expanded_minimap = not self.expanded_minimap
+            self.selected_target = None
         elif pygame.K_1 <= key <= pygame.K_4:
-            self.active_floor_index = key - pygame.K_1
+            new_floor = key - pygame.K_1
+            if new_floor != self.active_floor_index:
+                self.selected_target = None
+            self.active_floor_index = new_floor
+        elif key == pygame.K_x:
+            self.selected_target = None
         return True
 
     def handle_click(self, pos):
@@ -428,10 +549,50 @@ class RuViewApp:
                 elif button.action == "stop_stream":
                     self.camera_stream.stop()
                 elif button.action == "floor":
-                    self.active_floor_index = int(button.value)
+                    new_floor = int(button.value)
+                    if new_floor != self.active_floor_index:
+                        self.selected_target = None
+                    self.active_floor_index = new_floor
                 elif button.action == "toggle_minimap":
                     self.expanded_minimap = not self.expanded_minimap
+                    self.selected_target = None
+                    self.tag_mode = None
+                elif button.action == "unlock_target":
+                    self.selected_target = None
+                elif button.action == "set_tag_mode":
+                    self.tag_mode = None if self.tag_mode == button.value else button.value
+                elif button.action == "clear_tags":
+                    self.user_tags[self.active_floor_index] = {"trapped": [], "hazards": [], "events": []}
+                    self.selected_target = None
                 return
+
+        # No button hit. If the expanded minimap is open and the click is on the map:
+        #   - tag_mode active -> drop a marker at the click point
+        #   - otherwise       -> try to lock onto the nearest trapped/teammate dot
+        if self.expanded_minimap and self.expanded_map_rect and self.expanded_map_rect.collidepoint(pos):
+            if self.tag_mode is not None:
+                self._drop_tag(pos, self.expanded_map_rect)
+                return
+            hit = self.hit_test_map(pos, self.expanded_map_rect)
+            self.selected_target = (
+                None
+                if hit is None
+                else {"floor_idx": self.active_floor_index, "kind": hit[0], "idx": hit[1]}
+            )
+
+    def _drop_tag(self, pos, map_rect):
+        rx = (pos[0] - map_rect.x) / map_rect.width
+        ry = (pos[1] - map_rect.y) / map_rect.height
+        rx = max(0.02, min(0.98, rx))
+        ry = max(0.02, min(0.98, ry))
+        bucket = self.user_tags[self.active_floor_index][self.tag_mode]
+        n = len(bucket) + 1
+        if self.tag_mode == "trapped":
+            bucket.append({"x": rx, "y": ry, "label": f"VIC*{n}", "status": "DETECTED", "user": True})
+        elif self.tag_mode == "hazards":
+            bucket.append({"x": rx, "y": ry, "type": "TAG", "user": True})
+        else:  # events
+            bucket.append({"x": rx, "y": ry, "label": f"EVT*{n}", "user": True})
 
     def update_camera_surface(self):
         frame = self.camera_stream.consume_frame()
@@ -511,6 +672,389 @@ class RuViewApp:
         self.draw_button(pygame.Rect(rect.x + 170, rect.bottom - 40, 80, 30), "STOP", "stop_stream")
         self.draw_text(self.screen, "SPACE start/stop | 1-4 floors | M map | Q quit", (rect.x + 10, rect.bottom - 102), TEXT_DIM, self.small_font)
 
+    # ----- Tactical overlay helpers ---------------------------------------
+
+    def _floor_entities(self, floor_index: int) -> dict:
+        """Static seed + user-tagged markers, merged for rendering / hit-tests."""
+        floor = FLOOR_MAPS[floor_index]
+        base = FLOOR_ENTITIES.get(floor["asset"], {})
+        tags = self.user_tags.get(floor_index, {})
+        return {
+            "self": base.get("self"),
+            "teammates": base.get("teammates", []),
+            "trapped": list(base.get("trapped", [])) + list(tags.get("trapped", [])),
+            "hazards": list(base.get("hazards", [])) + list(tags.get("hazards", [])),
+            "events": list(tags.get("events", [])),
+            "nodes": base.get("nodes", []),
+            "links": base.get("links", []),
+            "exits": base.get("exits", []),
+        }
+
+    def sim_tick(self) -> float:
+        return time.perf_counter() - self.sim_start
+
+    def _wobble(self, seed, ax, ay, freq=1.0, phase=0.0):
+        t = self.sim_tick() * freq + phase + seed * 0.91
+        return ax * math.sin(t), ay * math.cos(t * 1.3 + 0.7)
+
+    def live_pos(self, entity, kind, idx):
+        """Return the live (x, y) normalized position for an entity. Mesh nodes/exits are anchored."""
+        bx, by = entity["x"], entity["y"]
+        if kind == "trapped":
+            dx, dy = self._wobble(idx + 11, 0.004, 0.004, 1.5)
+        elif kind == "teammate":
+            dx, dy = self._wobble(idx + 23, 0.022, 0.018, 0.55)
+        elif kind == "self":
+            dx, dy = self._wobble(0, 0.014, 0.011, 0.4)
+        elif kind == "hazard":
+            dx, dy = self._wobble(idx + 41, 0.008, 0.005, 2.4)
+        else:
+            dx, dy = 0.0, 0.0
+        return max(0.02, min(0.98, bx + dx)), max(0.02, min(0.98, by + dy))
+
+    def _nearest_node_index(self, nodes, point):
+        if not nodes:
+            return None
+        px, py = point
+        return min(range(len(nodes)), key=lambda i: (nodes[i]["x"] - px) ** 2 + (nodes[i]["y"] - py) ** 2)
+
+    def compute_rescue_route(self, entities, self_xy):
+        """Hop self -> nearest mesh node -> target's nearest mesh node -> target. Returns (waypoints, hop_idxs)."""
+        if (
+            self.selected_target is None
+            or self.selected_target["floor_idx"] != self.active_floor_index
+        ):
+            return None, None
+        kind = self.selected_target["kind"]
+        targets = entities.get(kind, [])
+        idx = self.selected_target["idx"]
+        if idx >= len(targets):
+            return None, None
+        kind_singular = "trapped" if kind == "trapped" else "teammate"
+        tx, ty = self.live_pos(targets[idx], kind_singular, idx)
+        nodes = entities.get("nodes", [])
+        pts = [self_xy]
+        hops: list[int] = []
+        if nodes:
+            i_self = self._nearest_node_index(nodes, self_xy)
+            i_target = self._nearest_node_index(nodes, (tx, ty))
+            pts.append((nodes[i_self]["x"], nodes[i_self]["y"]))
+            hops.append(i_self)
+            if i_target != i_self:
+                pts.append((nodes[i_target]["x"], nodes[i_target]["y"]))
+                hops.append(i_target)
+        pts.append((tx, ty))
+        return pts, hops
+
+    def compute_evac_route(self, entities, self_xy):
+        exits = entities.get("exits", [])
+        if not exits:
+            return None
+        sx, sy = self_xy
+        ex = min(exits, key=lambda e: (e["x"] - sx) ** 2 + (e["y"] - sy) ** 2)
+        return [self_xy, (ex["x"], ex["y"])]
+
+    def hit_test_map(self, pos, map_rect):
+        """Translate a screen-space click into normalized map coords and find the nearest dot."""
+        rx = (pos[0] - map_rect.x) / map_rect.width
+        ry = (pos[1] - map_rect.y) / map_rect.height
+        if not (0 <= rx <= 1 and 0 <= ry <= 1):
+            return None
+        entities = self._floor_entities(self.active_floor_index)
+        best = None
+        best_d2 = HIT_RADIUS_NORM ** 2
+        for kind, kind_singular in (("trapped", "trapped"), ("teammates", "teammate")):
+            for i, e in enumerate(entities.get(kind, [])):
+                ex, ey = self.live_pos(e, kind_singular, i)
+                d2 = (ex - rx) ** 2 + (ey - ry) ** 2
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best = (kind, i)
+        return best
+
+    def _dashed_line(self, surface, color, p0, p1, width=2, dash=8):
+        ax, ay = p0
+        bx, by = p1
+        seg_len = math.hypot(bx - ax, by - ay)
+        if seg_len <= 0:
+            return
+        steps = max(1, int(seg_len / dash))
+        for k in range(0, steps, 2):
+            t0 = k / steps
+            t1 = min(1.0, (k + 1) / steps)
+            pygame.draw.line(
+                surface, color,
+                (ax + (bx - ax) * t0, ay + (by - ay) * t0),
+                (ax + (bx - ax) * t1, ay + (by - ay) * t1),
+                width,
+            )
+
+    def _draw_arrowhead(self, color, tip, src, size=8, width=2):
+        tx, ty = tip
+        sx, sy = src
+        dx, dy = tx - sx, ty - sy
+        length = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / length, dy / length
+        # Two side points for the arrowhead
+        left = (tx - ux * size + uy * size * 0.5, ty - uy * size - ux * size * 0.5)
+        right = (tx - ux * size - uy * size * 0.5, ty - uy * size + ux * size * 0.5)
+        pygame.draw.polygon(self.screen, color, [tip, left, right])
+
+    def draw_floor_overlay(self, map_rect: pygame.Rect, floor_index: int, *, detail: str = "full"):
+        """Render entities + routes on top of the floor image at map_rect."""
+        floor = FLOOR_MAPS[floor_index]
+        entities = self._floor_entities(floor_index)
+        if not entities:
+            return
+        full = detail == "full"
+        s = 1.0 if full else 0.6
+
+        def to_px(p):
+            return (
+                int(map_rect.x + p[0] * map_rect.width),
+                int(map_rect.y + p[1] * map_rect.height),
+            )
+
+        # Subtle dim overlay so colored markers pop
+        dim = pygame.Surface(map_rect.size, pygame.SRCALPHA)
+        dim.fill((8, 12, 20, 60))
+        self.screen.blit(dim, map_rect.topleft)
+
+        # Mesh links (drawn faint, behind everything)
+        nodes = entities.get("nodes", [])
+        nodes_px = [to_px((n["x"], n["y"])) for n in nodes]
+        for a, b in entities.get("links", []):
+            if a < len(nodes_px) and b < len(nodes_px):
+                pygame.draw.line(self.screen, COLOR_LINK, nodes_px[a], nodes_px[b], 1)
+
+        # Live self position
+        self_e = entities.get("self")
+        self_xy = self.live_pos(self_e, "self", 0) if self_e else (0.5, 0.5)
+
+        # Routes
+        rescue_pts, rescue_hops = self.compute_rescue_route(entities, self_xy)
+        evac_pts = self.compute_evac_route(entities, self_xy)
+
+        def draw_route(pts_norm, color, *, dashed=False, label=None):
+            if not pts_norm or len(pts_norm) < 2:
+                return
+            pts = [to_px(p) for p in pts_norm]
+            thickness = 3 if full else 2
+            for i in range(len(pts) - 1):
+                if dashed:
+                    self._dashed_line(self.screen, color, pts[i], pts[i + 1], width=thickness)
+                else:
+                    pygame.draw.line(self.screen, color, pts[i], pts[i + 1], thickness)
+            if full:
+                for p in pts[1:-1]:
+                    pygame.draw.circle(self.screen, color, p, 3)
+            self._draw_arrowhead(color, pts[-1], pts[-2], size=9 if full else 6)
+            if full and label:
+                tip = pts[-1]
+                self.draw_text(self.screen, label, (tip[0] + 6, tip[1] + 6), color, self.small_font)
+
+        if rescue_pts:
+            draw_route(rescue_pts, COLOR_RESCUE, label="RESCUE")
+        if evac_pts:
+            draw_route(evac_pts, COLOR_EVAC, dashed=True, label="EVAC" if full else None)
+
+        # Mesh nodes (highlight hop nodes used by the active rescue route)
+        hop_set = set(rescue_hops or [])
+        for i, (nx, ny) in enumerate(nodes_px):
+            d = int(4 * s)
+            color = COLOR_HOP if i in hop_set else COLOR_NODE
+            pygame.draw.polygon(
+                self.screen, color,
+                [(nx, ny - d), (nx + d, ny), (nx, ny + d), (nx - d, ny)],
+            )
+            if full:
+                self.draw_text(self.screen, f"N{i+1}", (nx + d + 2, ny - 8), color, self.small_font)
+
+        # Exits
+        for ex in entities.get("exits", []):
+            x, y = to_px((ex["x"], ex["y"]))
+            d = int(5 * s)
+            pygame.draw.rect(self.screen, COLOR_EXIT, pygame.Rect(x - d, y - d, d * 2, d * 2))
+            if full:
+                self.draw_text(self.screen, ex.get("label", "X"), (x - 4, y - 8), (10, 30, 15), self.small_font)
+
+        # Hazards (animated)
+        for i, hz in enumerate(entities.get("hazards", [])):
+            hx, hy = self.live_pos(hz, "hazard", i)
+            x, y = to_px((hx, hy))
+            d = int(6 * s)
+            pygame.draw.polygon(
+                self.screen, COLOR_HAZARD,
+                [(x, y - d), (x - d, y + d), (x + d, y + d)],
+            )
+            if full:
+                self.draw_text(self.screen, hz.get("type", "HAZ"), (x + d + 2, y - 6), COLOR_HAZARD, self.small_font)
+
+        # Events (user-tagged "other" markers — purple diamond outline with "!")
+        for i, ev in enumerate(entities.get("events", [])):
+            x, y = to_px((ev["x"], ev["y"]))
+            d = int(7 * s)
+            pygame.draw.polygon(
+                self.screen, COLOR_EVENT,
+                [(x, y - d), (x + d, y), (x, y + d), (x - d, y)],
+                2,
+            )
+            if full:
+                self.draw_text(self.screen, "!", (x - 2, y - 7), COLOR_EVENT, self.small_font)
+                self.draw_text(self.screen, ev.get("label", "EVENT"), (x + d + 3, y - 8), COLOR_EVENT, self.small_font)
+
+        sel = self.selected_target if self.selected_target and self.selected_target["floor_idx"] == self.active_floor_index else None
+
+        # Teammates
+        for i, tm in enumerate(entities.get("teammates", [])):
+            tx, ty = self.live_pos(tm, "teammate", i)
+            x, y = to_px((tx, ty))
+            r = int(5 * s)
+            if sel and sel["kind"] == "teammates" and sel["idx"] == i:
+                pygame.draw.circle(self.screen, COLOR_HOP, (x, y), r + 5, 2)
+            pygame.draw.circle(self.screen, (0, 0, 0), (x, y), r + 1)
+            pygame.draw.circle(self.screen, COLOR_TEAMMATE, (x, y), r)
+            if full:
+                self.draw_text(self.screen, tm["label"], (x + r + 3, y - 8), COLOR_TEAMMATE, self.small_font)
+
+        # Trapped civilians
+        for i, vt in enumerate(entities.get("trapped", [])):
+            tx, ty = self.live_pos(vt, "trapped", i)
+            x, y = to_px((tx, ty))
+            outer = int(9 * s)
+            inner = int(4 * s)
+            if sel and sel["kind"] == "trapped" and sel["idx"] == i:
+                pygame.draw.circle(self.screen, COLOR_HOP, (x, y), outer + 5, 2)
+            pygame.draw.circle(self.screen, COLOR_TRAPPED, (x, y), outer, 2)
+            pygame.draw.circle(self.screen, COLOR_TRAPPED, (x, y), inner)
+            if full:
+                self.draw_text(self.screen, vt["label"], (x + outer + 3, y - 8), COLOR_TRAPPED, self.small_font)
+
+        # Self (yellow triangle)
+        if self_e:
+            x, y = to_px(self_xy)
+            d = int(8 * s)
+            pygame.draw.polygon(
+                self.screen, COLOR_SELF,
+                [(x, y - d), (x - int(d * 0.85), y + int(d * 0.7)), (x + int(d * 0.85), y + int(d * 0.7))],
+            )
+            if full:
+                self.draw_text(self.screen, self_e["label"], (x + d + 2, y - 8), COLOR_SELF, self.small_font)
+
+        # Legend (full only)
+        if full:
+            n_team = len(entities.get("teammates", []))
+            n_trap = len(entities.get("trapped", []))
+            n_haz = len(entities.get("hazards", []))
+            n_node = len(entities.get("nodes", []))
+            n_evt = len(entities.get("events", []))
+            legend_rect = pygame.Rect(map_rect.x + 8, map_rect.y + 8, 178, 126)
+            legend_bg = pygame.Surface(legend_rect.size, pygame.SRCALPHA)
+            legend_bg.fill((8, 14, 22, 200))
+            self.screen.blit(legend_bg, legend_rect.topleft)
+            pygame.draw.rect(self.screen, COLOR_NODE, legend_rect, 1)
+            self.draw_text(self.screen, f"{floor['label']} · LIVE MESH", (legend_rect.x + 8, legend_rect.y + 4), COLOR_NODE, self.small_font)
+            rows = [
+                (COLOR_TRAPPED,  f"TRAPPED    x{n_trap}"),
+                (COLOR_TEAMMATE, f"TEAM       x{n_team}"),
+                (COLOR_HAZARD,   f"HAZARDS    x{n_haz}"),
+                (COLOR_EVENT,    f"EVENTS     x{n_evt}"),
+                (COLOR_NODE,     f"MESH NODES x{n_node}"),
+                (COLOR_RESCUE,   "TAP DOT TO LOCK"),
+            ]
+            for i, (c, label) in enumerate(rows):
+                ry = legend_rect.y + 24 + i * 16
+                pygame.draw.circle(self.screen, c, (legend_rect.x + 16, ry + 6), 4)
+                self.draw_text(self.screen, label, (legend_rect.x + 26, ry), TEXT, self.small_font)
+
+    def draw_target_stats_panel(self):
+        """Live distance/bearing/HR/CSI panel for the locked target. Renders only when expanded."""
+        sel = self.selected_target
+        if sel is None or sel["floor_idx"] != self.active_floor_index:
+            return
+        entities = self._floor_entities(self.active_floor_index)
+        targets = entities.get(sel["kind"], [])
+        if sel["idx"] >= len(targets):
+            self.selected_target = None
+            return
+
+        target = targets[sel["idx"]]
+        kind_singular = "trapped" if sel["kind"] == "trapped" else "teammate"
+        tx, ty = self.live_pos(target, kind_singular, sel["idx"])
+        self_e = entities.get("self") or {"x": 0.5, "y": 0.5}
+        sx, sy = self.live_pos(self_e, "self", 0)
+
+        dx, dy = tx - sx, ty - sy
+        dist_m = math.hypot(dx, dy) * 30.0  # ~30 m across the floor
+        bearing = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
+        eta_s = max(1.0, dist_m / 1.4)
+        compass = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][int((bearing + 22.5) % 360 // 45)]
+
+        seed = sel["idx"] + (10 if sel["kind"] == "trapped" else 30)
+        t = self.sim_tick()
+        if sel["kind"] == "trapped":
+            hr = int(96 + 14 * math.sin(t * 1.6 + seed) + 7 * math.sin(t * 4.2 + seed * 0.5))
+        else:
+            hr = int(target.get("hr", 95) + 6 * math.sin(t * 1.1 + seed))
+        sig_pct = max(35, min(99, int(82 + 10 * math.sin(t * 0.9 + seed) + 6 * math.cos(t * 2.7 + seed))))
+
+        label = target.get("label", "?")
+        status = target.get("status", "—") if sel["kind"] == "trapped" else "ON MOVE"
+        accent = COLOR_TRAPPED if sel["kind"] == "trapped" else COLOR_TEAMMATE
+        kind_text = "CIVILIAN" if sel["kind"] == "trapped" else "FIREFIGHTER"
+
+        # Mesh-hop summary (route description)
+        nodes = entities.get("nodes", [])
+        if nodes:
+            i_self = self._nearest_node_index(nodes, (sx, sy))
+            i_target = self._nearest_node_index(nodes, (tx, ty))
+            if i_self == i_target:
+                hops_str = f"YOU -> N{i_self+1} -> {label}"
+            else:
+                hops_str = f"YOU -> N{i_self+1} -> N{i_target+1} -> {label}"
+        else:
+            hops_str = "direct"
+
+        # Panel — translucent overlay top-right of the screen so map stays visible
+        panel = pygame.Rect(WIDTH - 220, 56, 210, 250)
+        bg = pygame.Surface(panel.size, pygame.SRCALPHA)
+        bg.fill((10, 18, 28, 230))
+        self.screen.blit(bg, panel.topleft)
+        pygame.draw.rect(self.screen, accent, panel, 1, border_radius=4)
+
+        # Title bar
+        self.draw_text(self.screen, f"TARGET LOCK : {label}", (panel.x + 10, panel.y + 8), accent, self.font)
+        pygame.draw.line(self.screen, accent, (panel.x + 8, panel.y + 30), (panel.right - 8, panel.y + 30), 1)
+
+        # Stat rows
+        rows = [
+            ("CLASS", kind_text),
+            ("DIST", f"{dist_m:5.1f} m"),
+            ("BEARING", f"{bearing:5.0f} deg  {compass}"),
+            ("ETA", f"{eta_s:5.0f} s"),
+            ("HR", f"{hr} bpm"),
+            ("CSI SIG", f"{sig_pct}%"),
+            ("STATE", status),
+        ]
+        ry = panel.y + 38
+        for k, v in rows:
+            self.draw_text(self.screen, f"{k:<8}", (panel.x + 10, ry), MUTED, self.small_font)
+            self.draw_text(self.screen, v, (panel.x + 78, ry), TEXT, self.small_font)
+            ry += 18
+        pygame.draw.line(self.screen, PANEL_BORDER, (panel.x + 8, ry + 4), (panel.right - 8, ry + 4), 1)
+        ry += 10
+        self.draw_text(self.screen, "MESH HOPS", (panel.x + 10, ry), COLOR_NODE, self.small_font)
+        self.draw_wrapped_text(
+            self.screen,
+            hops_str,
+            pygame.Rect(panel.x + 10, ry + 16, panel.width - 20, 32),
+            TEXT,
+            self.small_font,
+        )
+
+        # Unlock button
+        self.draw_button(pygame.Rect(panel.x + 10, panel.bottom - 32, panel.width - 20, 24), "UNLOCK", "unlock_target")
+
     def draw_minimap_panel(self, rect):
         self.draw_panel(rect, "FACILITY MAP", CYAN)
         for index in range(len(FLOOR_MAPS)):
@@ -522,7 +1066,9 @@ class RuViewApp:
         scaled_rect.centerx = rect.centerx
         scaled_rect.y = rect.y + 64
         self.screen.blit(scaled, scaled_rect)
+        self.draw_floor_overlay(scaled_rect, self.active_floor_index, detail="compact")
         pygame.draw.rect(self.screen, (0, 180, 216), scaled_rect, 1)
+        self.preview_map_rect = scaled_rect.copy()
         self.buttons.append(Button(scaled_rect, "map", "toggle_minimap"))
 
     def draw_telemetry_panel(self, rect):
@@ -543,10 +1089,36 @@ class RuViewApp:
         for index in range(len(FLOOR_MAPS)):
             self.draw_button(pygame.Rect(285 + index * 30, 16, 22, 22), str(index + 1), "floor", index, compact=True)
         self.draw_button(pygame.Rect(665, 14, 110, 30), "MINIMIZE", "toggle_minimap")
-        scaled, scaled_rect = self.fit_surface(self.floor_surfaces[self.active_floor_index], 760, 390)
-        scaled_rect.center = (WIDTH // 2, 265)
+
+        # Leave room for the stats panel on the right when a target is locked
+        max_w = 540 if (self.selected_target and self.selected_target["floor_idx"] == self.active_floor_index) else 760
+        scaled, scaled_rect = self.fit_surface(self.floor_surfaces[self.active_floor_index], max_w, 380)
+        # Anchor the map to the left half so the stats panel can sit on the right.
+        # Vertically: header sits at y<=44, tag toolbar starts at y=HEIGHT-36, so center between.
+        scaled_rect.x = max(20, (max_w + 40 - scaled_rect.width) // 2)
+        scaled_rect.y = 245 - scaled_rect.height // 2
         self.screen.blit(scaled, scaled_rect)
+        self.draw_floor_overlay(scaled_rect, self.active_floor_index, detail="full")
         pygame.draw.rect(self.screen, PANEL_BORDER, scaled_rect, 1)
+        self.expanded_map_rect = scaled_rect.copy()
+
+        self.draw_target_stats_panel()
+
+        # Tag toolbar — drop hazards / trapped / events on the map
+        toolbar_y = HEIGHT - 36
+        self.draw_button(pygame.Rect(10, toolbar_y, 92, 26), "+ HAZARD",  "set_tag_mode", "hazards", compact=True)
+        self.draw_button(pygame.Rect(108, toolbar_y, 96, 26), "+ TRAPPED", "set_tag_mode", "trapped", compact=True)
+        self.draw_button(pygame.Rect(210, toolbar_y, 88, 26), "+ EVENT",   "set_tag_mode", "events",  compact=True)
+        self.draw_button(pygame.Rect(304, toolbar_y, 96, 26), "CLEAR TAGS", "clear_tags", compact=True)
+
+        if self.tag_mode is not None:
+            mode_label = {"trapped": "TRAPPED", "hazards": "HAZARD", "events": "EVENT"}[self.tag_mode]
+            mode_color = {"trapped": COLOR_TRAPPED, "hazards": COLOR_HAZARD, "events": COLOR_EVENT}[self.tag_mode]
+            hint = f"TAG MODE: {mode_label} - click on the map to drop. Click button again to exit."
+            self.draw_text(self.screen, hint, (410, toolbar_y + 6), mode_color, self.small_font)
+        else:
+            hint = "TAP A RED OR CYAN DOT TO LOCK | M MINIMIZE | X UNLOCK"
+            self.draw_text(self.screen, hint, (410, toolbar_y + 6), TEXT_DIM, self.small_font)
 
     def fit_surface(self, surface, max_width, max_height):
         width, height = surface.get_size()
@@ -556,7 +1128,10 @@ class RuViewApp:
         return scaled, scaled.get_rect()
 
     def draw_button(self, rect, label, action, value=None, compact=False):
-        active = action == "floor" and value == self.active_floor_index
+        active = (
+            (action == "floor" and value == self.active_floor_index)
+            or (action == "set_tag_mode" and value == self.tag_mode)
+        )
         fill = (0, 180, 216) if active else (55, 62, 78)
         pygame.draw.rect(self.screen, fill, rect, border_radius=5)
         pygame.draw.rect(self.screen, CYAN if active else PANEL_BORDER, rect, 1, border_radius=5)
