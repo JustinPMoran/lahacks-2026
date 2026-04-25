@@ -29,3 +29,11 @@ ini_file.ini
 
 # External / Temporary
 .temp/
+vendor/
+
+# ESP-IDF firmware build artifacts (under backend/firmware/)
+backend/firmware/*/build/
+backend/firmware/*/managed_components/
+backend/firmware/*/dependencies.lock
+backend/firmware/*/sdkconfig
+backend/firmware/*/sdkconfig.old

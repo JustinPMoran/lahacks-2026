@@ -2,3 +2,8 @@
 dearpygui
 requests
 websockets
+
+# CSI motion pipeline (backend/)
+pyserial
+numpy
+matplotlib
