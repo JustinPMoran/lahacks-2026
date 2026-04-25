@@ -25,7 +25,7 @@ __pycache__/
 ehthumbs.db
 Thumbs.db
 
-# DearPyGui / Graphics specific
+# GUI / Graphics specific
 *.log
 ini_file.ini
 .cache/
@@ -44,4 +44,4 @@ backend/firmware/*/dependencies.lock
 backend/firmware/*/sdkconfig
 backend/firmware/*/sdkconfig.old
 
-detectron2/*
+./detectron2/*

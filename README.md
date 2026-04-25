@@ -60,11 +60,13 @@ python frontend/main.py
 
 If the Pi camera is exposed as a video device, `DENSEPOSE_CAMERA_SOURCE=0` or `/dev/video0` should work. The frontend sends one compressed frame, waits for the processed frame, and displays the returned DensePose-only/black output.
 
+The frontend uses Pygame instead of DearPyGui so it can run on Raspberry Pi OS. Set `RUVIEW_FULLSCREEN=1` for kiosk-style display output.
+
 ## 🛠 Tech Stack
 - **Mesh Nodes**: ESP32-S3
 - **Local Host**: Raspberry Pi 4/5
 - **Display**: Freenove 800x480 DSI
-- **GUI Framework**: DearPyGui (Python)
+- **GUI Framework**: Pygame (Python)
 
 ## 🎨 Design Tokens
 - **Primary**: Neon Cyan `(0, 255, 255)`
@@ -73,6 +75,6 @@ If the Pi camera is exposed as a video device, `DENSEPOSE_CAMERA_SOURCE=0` or `/
 - **Resolution**: Pixel-perfect **800x480**
 
 ## 📂 Structure
-- `/frontend`: DearPyGui application and assets.
+- `/frontend`: Pygame command-center application and assets.
 - `/backend`: WiFi sensing logic and ESP32 firmware (In Progress).
 - `/.memory`: Project context and AI agent instructions.

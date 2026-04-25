@@ -1,90 +1,92 @@
 # After making your desired changes, update .memory/memory.md with what you did and why. Read it before each task.
-import dearpygui.dearpygui as dpg
-import asyncio
-import random
-import math
-import time
-import sys
-import os
-import threading
+from __future__ import annotations
 
-# Ensure backend can be imported
+import asyncio
+import os
+import sys
+import threading
+import time
+from dataclasses import dataclass
+
+import pygame
+
+# Ensure backend can be imported when running from frontend/ or the repo root.
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.mock_service import RuViewMockService
 
-# Configuration for the 5/7 inch screen (800x480)
+
 WIDTH = 800
 HEIGHT = 480
+FPS = 30
+
 ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "floors")
 CAMERA_STREAM_WIDTH = 380
 CAMERA_STREAM_HEIGHT = 214
-DEFAULT_DENSEPOSE_WS_URL = os.environ.get(
-    "DENSEPOSE_WS_URL",
-    "wss://q39bcrtj15v9tr-8765.proxy.runpod.net",
-)
+DEFAULT_DENSEPOSE_WS_URL = os.environ.get("DENSEPOSE_WS_URL", "ws://103.196.86.92:33644")
 DEFAULT_STREAM_SEND_WIDTH = int(os.environ.get("DENSEPOSE_SEND_WIDTH", "512"))
 DEFAULT_STREAM_JPEG_QUALITY = int(os.environ.get("DENSEPOSE_JPEG_QUALITY", "60"))
 DEFAULT_STREAM_TARGET_FPS = float(os.environ.get("DENSEPOSE_TARGET_FPS", "18"))
 
+BG = (15, 17, 26)
+PANEL_BG = (22, 25, 37)
+PANEL_BORDER = (40, 45, 60)
+CYAN = (0, 255, 255)
+GREEN = (0, 255, 150)
+AMBER = (255, 200, 0)
+MUTED = (100, 120, 140)
+TEXT = (190, 200, 220)
+TEXT_DIM = (80, 85, 100)
+RED = (255, 70, 80)
+
+
 FLOOR_MAPS = [
-    {
-        "label": "LEVEL 1",
-        "detail": "Stadium Floor",
-        "asset": "level_1_stadium_floor.png",
-        "texture_tag": "floor_map_level_1",
-        "color": (0, 255, 255),
-    },
-    {
-        "label": "LEVEL 2",
-        "detail": "Lower Bowl",
-        "asset": "level_2_lower_bowl.png",
-        "texture_tag": "floor_map_level_2",
-        "color": (0, 255, 150),
-    },
-    {
-        "label": "LEVEL 3",
-        "detail": "Upper Bowl",
-        "asset": "level_3_upper_bowl.png",
-        "texture_tag": "floor_map_level_3",
-        "color": (255, 200, 0),
-    },
-    {
-        "label": "LEVEL 4",
-        "detail": "Concourse",
-        "asset": "level_4_concourse_exterior.png",
-        "texture_tag": "floor_map_level_4",
-        "color": (255, 85, 180),
-    },
+    {"label": "LEVEL 1", "detail": "Stadium Floor", "asset": "level_1_stadium_floor.png", "color": CYAN},
+    {"label": "LEVEL 2", "detail": "Lower Bowl", "asset": "level_2_lower_bowl.png", "color": GREEN},
+    {"label": "LEVEL 3", "detail": "Upper Bowl", "asset": "level_3_upper_bowl.png", "color": AMBER},
+    {"label": "LEVEL 4", "detail": "Concourse", "asset": "level_4_concourse_exterior.png", "color": (255, 85, 180)},
 ]
 
-active_floor_index = 0
+
+@dataclass
+class Button:
+    rect: pygame.Rect
+    label: str
+    action: str
+    value: object | None = None
+
 
 class BackendManager:
-    """Manages connection to the RuView API (Mock or Live)"""
+    """Manages connection to the RuView API (Mock or Live)."""
+
     def __init__(self):
         self.mock = RuViewMockService()
         self.use_mock = True
         self.backend_url = "http://localhost:8000"
         self.last_pose = None
         self.nodes = []
-        self.logs = []
+        self.status = self.mock.get_system_status()
 
     def update(self):
         if self.use_mock:
             self.last_pose = self.mock.get_latest_pose()
             self.nodes = self.mock.get_nodes()
             self.status = self.mock.get_system_status()
-        # Live implementation would fetch from self.backend_url via requests/websockets here
 
     def get_logs(self):
-        # Placeholder for telemetry sync
+        average_fps = self.status["data"]["performance"]["average_fps"]
+        online_nodes = len([node for node in self.nodes if node["status"] == "ONLINE"])
         return [
-            f"[SYNC] {time.strftime('%H:%M:%S')} - Model: {self.status['data']['performance']['average_fps']} FPS",
-            f"[NODE] Online Count: {len([n for n in self.nodes if n['status'] == 'ONLINE'])}"
+            f"[SYNC] {time.strftime('%H:%M:%S')} - Model: {average_fps} FPS",
+            f"[NODE] Online Count: {online_nodes}",
+            "[CSI] Multi-path interference low",
+            "[POSE] RunPod stream target active",
+            "[TRACK] Awaiting processed DensePose frame",
         ]
+
 
 class CameraDensePoseStream:
     """Streams a local camera source to a GPU DensePose WebSocket server."""
+
     def __init__(self):
         self.ws_url = DEFAULT_DENSEPOSE_WS_URL
         self.camera_source = os.environ.get(
@@ -97,8 +99,8 @@ class CameraDensePoseStream:
         self.thread = None
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
-        self.status = "idle | start camera stream when GPU server is ready"
-        self.latest_texture_data = None
+        self.status = "idle | press START when GPU server is ready"
+        self.latest_frame = None
         self.last_fps = 0.0
 
     def start(self):
@@ -112,25 +114,20 @@ class CameraDensePoseStream:
         self.stop_event.set()
         self._set_status("stopping camera stream")
 
+    def toggle(self):
+        if self.is_running():
+            self.stop()
+        else:
+            self.start()
+
     def is_running(self):
         return self.thread is not None and self.thread.is_alive()
 
-    def set_url(self, ws_url):
-        self.ws_url = ws_url.strip() or DEFAULT_DENSEPOSE_WS_URL
-
-    def set_camera_source(self, camera_source):
-        self.camera_source = str(camera_source).strip() or "0"
-
-    def configure_stream(self, send_width, jpeg_quality, target_fps):
-        self.send_width = max(256, min(960, int(send_width)))
-        self.jpeg_quality = max(35, min(90, int(jpeg_quality)))
-        self.target_fps = max(1.0, min(30.0, float(target_fps)))
-
-    def consume_texture_data(self):
+    def consume_frame(self):
         with self.lock:
-            texture_data = self.latest_texture_data
-            self.latest_texture_data = None
-        return texture_data
+            frame = self.latest_frame
+            self.latest_frame = None
+        return frame
 
     def _set_status(self, status):
         with self.lock:
@@ -138,9 +135,9 @@ class CameraDensePoseStream:
 
     def _publish_frame(self, frame, cv2):
         resized = cv2.resize(frame, (CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT), interpolation=cv2.INTER_AREA)
-        rgba = cv2.cvtColor(resized, cv2.COLOR_BGR2RGBA).astype("float32") / 255.0
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         with self.lock:
-            self.latest_texture_data = rgba.ravel().tolist()
+            self.latest_frame = rgb.copy()
 
     def _run_thread(self):
         try:
@@ -196,18 +193,13 @@ class CameraDensePoseStream:
                         send_height = max(1, int(frame.shape[0] * self.send_width / frame.shape[1]))
                         frame = cv2.resize(frame, (self.send_width, send_height), interpolation=cv2.INTER_AREA)
 
-                    ok, encoded = cv2.imencode(
-                        ".jpg",
-                        frame,
-                        [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
-                    )
+                    ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
                     if not ok:
-                        self._set_status("encode error | could not compress webcam frame")
+                        self._set_status("encode error | could not compress camera frame")
                         continue
 
                     await websocket.send(encoded.tobytes())
                     response = await asyncio.wait_for(websocket.recv(), timeout=15)
-
                     if isinstance(response, str):
                         self._set_status(response)
                         continue
@@ -227,418 +219,247 @@ class CameraDensePoseStream:
                         f"{self.send_width}px q{self.jpeg_quality}"
                     )
 
-                    frame_budget = 1.0 / self.target_fps
-                    sleep_for = frame_budget - (time.perf_counter() - loop_started)
+                    sleep_for = (1.0 / self.target_fps) - (time.perf_counter() - loop_started)
                     if sleep_for > 0:
                         await asyncio.sleep(sleep_for)
         finally:
             capture.release()
 
-backend = BackendManager()
-camera_stream = CameraDensePoseStream()
 
-def load_floor_map_textures():
-    with dpg.texture_registry(show=False):
+class RuViewApp:
+    def __init__(self):
+        pygame.init()
+        fullscreen = os.environ.get("RUVIEW_FULLSCREEN", "0") == "1"
+        flags = pygame.FULLSCREEN if fullscreen else 0
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+        pygame.display.set_caption("RUVIEW COMMAND CENTER")
+        pygame.mouse.set_visible(not fullscreen)
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.Font(None, 20)
+        self.small_font = pygame.font.Font(None, 17)
+        self.large_font = pygame.font.Font(None, 28)
+        self.backend = BackendManager()
+        self.camera_stream = CameraDensePoseStream()
+        self.active_floor_index = 0
+        self.expanded_minimap = False
+        self.buttons: list[Button] = []
+        self.camera_surface = pygame.Surface((CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT))
+        self.camera_surface.fill((0, 0, 0))
+        self.floor_surfaces = self.load_floor_surfaces()
+
+    def load_floor_surfaces(self):
+        surfaces = []
         for floor in FLOOR_MAPS:
-            image_path = os.path.join(ASSET_DIR, floor["asset"])
-            width, height, channels, data = dpg.load_image(image_path)
-            floor["width"] = width
-            floor["height"] = height
-            floor["channels"] = channels
-            dpg.add_static_texture(width, height, data, tag=floor["texture_tag"])
-        blank_frame = [0.0, 0.0, 0.0, 1.0] * CAMERA_STREAM_WIDTH * CAMERA_STREAM_HEIGHT
-        dpg.add_dynamic_texture(
-            CAMERA_STREAM_WIDTH,
-            CAMERA_STREAM_HEIGHT,
-            blank_frame,
-            tag="camera_stream_texture",
+            path = os.path.join(ASSET_DIR, floor["asset"])
+            try:
+                surfaces.append(pygame.image.load(path).convert_alpha())
+            except (FileNotFoundError, pygame.error):
+                placeholder = pygame.Surface((320, 180))
+                placeholder.fill((30, 34, 48))
+                self.draw_text(placeholder, "MAP ASSET MISSING", (20, 20), AMBER)
+                surfaces.append(placeholder)
+        return surfaces
+
+    def run(self):
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    running = self.handle_key(event.key)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    self.handle_click(event.pos)
+
+            self.backend.update()
+            self.update_camera_surface()
+            self.render()
+            pygame.display.flip()
+            self.clock.tick(FPS)
+
+        self.camera_stream.stop()
+        pygame.quit()
+
+    def handle_key(self, key):
+        if key in (pygame.K_ESCAPE, pygame.K_q):
+            return False
+        if key == pygame.K_SPACE:
+            self.camera_stream.toggle()
+        elif key == pygame.K_m:
+            self.expanded_minimap = not self.expanded_minimap
+        elif pygame.K_1 <= key <= pygame.K_4:
+            self.active_floor_index = key - pygame.K_1
+        return True
+
+    def handle_click(self, pos):
+        for button in self.buttons:
+            if button.rect.collidepoint(pos):
+                if button.action == "toggle_stream":
+                    self.camera_stream.toggle()
+                elif button.action == "stop_stream":
+                    self.camera_stream.stop()
+                elif button.action == "floor":
+                    self.active_floor_index = int(button.value)
+                elif button.action == "toggle_minimap":
+                    self.expanded_minimap = not self.expanded_minimap
+                return
+
+    def update_camera_surface(self):
+        frame = self.camera_stream.consume_frame()
+        if frame is None:
+            return
+        self.camera_surface = pygame.image.frombuffer(
+            frame.tobytes(),
+            (frame.shape[1], frame.shape[0]),
+            "RGB",
+        ).copy()
+
+    def render(self):
+        self.buttons = []
+        self.screen.fill(BG)
+        if self.expanded_minimap:
+            self.draw_expanded_minimap()
+            return
+
+        self.draw_header()
+        self.draw_node_panel(pygame.Rect(10, 70, 175, 390))
+        self.draw_stream_panel(pygame.Rect(200, 70, 400, 390))
+        self.draw_minimap_panel(pygame.Rect(615, 70, 175, 160))
+        self.draw_telemetry_panel(pygame.Rect(615, 240, 175, 220))
+
+    def draw_header(self):
+        self.draw_text(self.screen, "RUVIEW SYSTEM", (12, 14), CYAN, self.large_font)
+        status = self.backend.status["data"]
+        self.draw_text(
+            self.screen,
+            f"| COMMAND CENTER v1.0 | {status['status'].upper()} | {status['performance']['average_fps']} FPS",
+            (190, 18),
+            TEXT_DIM,
         )
+        pygame.draw.line(self.screen, PANEL_BORDER, (10, 52), (790, 52), 1)
 
-def selected_floor():
-    return FLOOR_MAPS[active_floor_index]
+    def draw_panel(self, rect, title, color):
+        pygame.draw.rect(self.screen, PANEL_BG, rect, border_radius=6)
+        pygame.draw.rect(self.screen, PANEL_BORDER, rect, 1, border_radius=6)
+        self.draw_text(self.screen, title, (rect.x + 10, rect.y + 10), color)
 
-def fit_map_size(floor, max_width, max_height):
-    scale = min(max_width / floor["width"], max_height / floor["height"])
-    return int(floor["width"] * scale), int(floor["height"] * scale)
+    def draw_node_panel(self, rect):
+        self.draw_panel(rect, "NODES", GREEN)
+        y = rect.y + 42
+        for node in self.backend.nodes:
+            status_color = GREEN if node["status"] == "ONLINE" else RED
+            self.draw_text(self.screen, node["name"], (rect.x + 10, y), TEXT)
+            self.draw_text(self.screen, f"* {node['status']}", (rect.x + 18, y + 20), status_color, self.small_font)
+            self.draw_text(self.screen, f"RSSI: {node['rssi']}", (rect.x + 18, y + 38), MUTED, self.small_font)
+            pygame.draw.line(self.screen, PANEL_BORDER, (rect.x + 10, y + 60), (rect.right - 10, y + 60))
+            y += 72
 
-def configure_map_item(item_tag, floor, max_width, max_height, group_tag=None, container_width=None):
-    width, height = fit_map_size(floor, max_width, max_height)
-    dpg.configure_item(item_tag, texture_tag=floor["texture_tag"], width=width, height=height)
-    if group_tag and container_width and dpg.does_item_exist(group_tag):
-        dpg.configure_item(group_tag, indent=max(0, (container_width - width) // 2))
+        self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 78, rect.width - 20, 28), "SCAN MESH", "noop")
+        self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 40, rect.width - 20, 28), "SYSTEM REBOOT", "noop")
 
-def bind_floor_button_theme(button_tag, floor_index):
-    state = "active" if floor_index == active_floor_index else "idle"
-    dpg.bind_item_theme(button_tag, f"floor_button_{floor_index}_{state}_theme")
+    def draw_stream_panel(self, rect):
+        self.draw_panel(rect, "RPI CAMERA GPU DENSEPOSE STREAM", CYAN)
+        image_rect = pygame.Rect(rect.x + 10, rect.y + 40, CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT)
+        pygame.draw.rect(self.screen, (0, 0, 0), image_rect)
+        self.screen.blit(self.camera_surface, image_rect)
+        pygame.draw.rect(self.screen, (0, 180, 216), image_rect, 1)
 
-def set_active_floor(index):
-    global active_floor_index
-    active_floor_index = index
-    floor = selected_floor()
-
-    if dpg.does_item_exist("minimap_preview_button"):
-        configure_map_item("minimap_preview_button", floor, 155, 92, "minimap_image_group", 155)
-    if dpg.does_item_exist("expanded_floor_image"):
-        configure_map_item("expanded_floor_image", floor, 760, 375, "expanded_map_image_group", 780)
-
-    for floor_index in range(len(FLOOR_MAPS)):
-        for prefix in ("minimap_floor_selector", "expanded_floor_selector"):
-            button_tag = f"{prefix}_{floor_index}"
-            if dpg.does_item_exist(button_tag):
-                bind_floor_button_theme(button_tag, floor_index)
-
-def show_expanded_minimap():
-    dpg.hide_item("Minimap Window")
-    dpg.show_item("Expanded Minimap Window")
-    dpg.focus_item("Expanded Minimap Window")
-
-def hide_expanded_minimap():
-    dpg.hide_item("Expanded Minimap Window")
-    dpg.show_item("Minimap Window")
-
-def setup_theme():
-    with dpg.theme() as global_theme:
-        with dpg.theme_component(dpg.mvAll):
-            # Window & Panels
-            dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (15, 17, 26, 255))
-            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (22, 25, 37, 255))
-            dpg.add_theme_color(dpg.mvThemeCol_Border, (40, 45, 60, 255))
-            
-            # Text
-            dpg.add_theme_color(dpg.mvThemeCol_Text, (180, 190, 210, 255))
-            dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, (80, 85, 100, 255))
-            
-            # Buttons (Neon Cyan)
-            dpg.add_theme_color(dpg.mvThemeCol_Button, (0, 180, 216, 100))
-            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (0, 180, 216, 200))
-            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (0, 180, 216, 255))
-            
-            # Frame Backgrounds
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (32, 36, 52, 255))
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (42, 46, 62, 255))
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, (52, 56, 72, 255))
-            
-            # Headers & Tabs
-            dpg.add_theme_color(dpg.mvThemeCol_Header, (0, 180, 216, 80))
-            dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, (0, 180, 216, 150))
-            dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, (0, 180, 216, 200))
-            
-            # Sliders/Checkboxes
-            dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (0, 255, 180, 255))
-            dpg.add_theme_color(dpg.mvThemeCol_SliderGrab, (0, 180, 216, 255))
-            dpg.add_theme_color(dpg.mvThemeCol_SliderGrabActive, (0, 255, 255, 255))
-
-            # Styling
-            dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 0) # Hard edges look more 'pro' on small screens
-            dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 6)
-            dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
-            dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 4)
-            dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 10, 10)
-            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 10, 10)
-
-    dpg.bind_theme(global_theme)
-
-def create_floor_button_themes():
-    for index in range(len(FLOOR_MAPS)):
-        for state, alpha, border in (("idle", 120, 0), ("active", 255, 255)):
-            with dpg.theme(tag=f"floor_button_{index}_{state}_theme"):
-                with dpg.theme_component(dpg.mvButton):
-                    dpg.add_theme_color(dpg.mvThemeCol_Button, (55, 62, 78, alpha))
-                    dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (90, 100, 120, 220))
-                    dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (130, 140, 160, 255))
-                    dpg.add_theme_color(dpg.mvThemeCol_Text, (220, 225, 235, 255))
-                    dpg.add_theme_color(dpg.mvThemeCol_Border, (255, 255, 255, border))
-                    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-                    dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 1 if border else 0)
-
-def draw_dense_pose(center_x, center_y):
-    # Faking DensePose UV/Part points
-    # Each part is a cluster of points with a specific color logic
-    parts = [
-        {"name": "torso", "color": (0, 255, 255), "spread_x": 20, "spread_y": 40, "offset_y": 30, "count": 25},
-        {"name": "head", "color": (255, 200, 0), "spread_x": 12, "spread_y": 12, "offset_y": -15, "count": 12},
-        {"name": "l_arm", "color": (0, 255, 150), "spread_x": 8, "spread_y": 30, "offset_x": -25, "offset_y": 45, "count": 15},
-        {"name": "r_arm", "color": (0, 255, 150), "spread_x": 8, "spread_y": 30, "offset_x": 25, "offset_y": 45, "count": 15},
-        {"name": "l_leg", "color": (0, 150, 255), "spread_x": 10, "spread_y": 40, "offset_x": -12, "offset_y": 105, "count": 20},
-        {"name": "r_leg", "color": (0, 150, 255), "spread_x": 10, "spread_y": 40, "offset_x": 12, "offset_y": 105, "count": 20},
-    ]
-    
-    for part in parts:
-        for _ in range(part.get("count", 10)):
-            # Random jitter for 'cloud' effect
-            px = center_x + part.get("offset_x", 0) + (random.random() - 0.5) * part["spread_x"] * 2
-            py = center_y + part.get("offset_y", 0) + (random.random() - 0.5) * part["spread_y"] * 2
-            
-            # Draw point with slight transparency
-            alpha = random.randint(100, 200)
-            dpg.draw_circle((px, py), 1.5, color=(*part["color"], alpha), fill=(*part["color"], alpha // 2), parent="spatial_drawlist")
-
-def start_camera_stream():
-    if dpg.does_item_exist("camera_stream_url_input"):
-        camera_stream.set_url(dpg.get_value("camera_stream_url_input"))
-    if dpg.does_item_exist("camera_source_input"):
-        camera_stream.set_camera_source(dpg.get_value("camera_source_input"))
-    if all(
-        dpg.does_item_exist(tag)
-        for tag in ("camera_send_width", "camera_jpeg_quality", "camera_target_fps")
-    ):
-        camera_stream.configure_stream(
-            dpg.get_value("camera_send_width"),
-            dpg.get_value("camera_jpeg_quality"),
-            dpg.get_value("camera_target_fps"),
+        y = image_rect.bottom + 12
+        self.draw_text(self.screen, "Pi camera -> RunPod GPU -> DensePose-only output", (rect.x + 10, y), MUTED, self.small_font)
+        self.draw_wrapped_text(self.screen, self.camera_stream.status, pygame.Rect(rect.x + 10, y + 22, 380, 42), GREEN)
+        self.draw_text(
+            self.screen,
+            f"CAM {self.camera_stream.camera_source} | {self.camera_stream.send_width}px | JPG {self.camera_stream.jpeg_quality} | {self.camera_stream.target_fps:.0f} FPS",
+            (rect.x + 10, rect.bottom - 72),
+            TEXT_DIM,
+            self.small_font,
         )
-    camera_stream.start()
+        label = "STOP STREAM" if self.camera_stream.is_running() else "START STREAM"
+        self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 40, 150, 30), label, "toggle_stream")
+        self.draw_button(pygame.Rect(rect.x + 170, rect.bottom - 40, 80, 30), "STOP", "stop_stream")
+        self.draw_text(self.screen, "SPACE start/stop | 1-4 floors | M map | Q quit", (rect.x + 10, rect.bottom - 102), TEXT_DIM, self.small_font)
 
-def stop_camera_stream():
-    camera_stream.stop()
+    def draw_minimap_panel(self, rect):
+        self.draw_panel(rect, "FACILITY MAP", CYAN)
+        for index in range(len(FLOOR_MAPS)):
+            button_rect = pygame.Rect(rect.x + 36 + index * 24, rect.y + 34, 18, 18)
+            self.draw_button(button_rect, str(index + 1), "floor", index, compact=True)
 
-def update_camera_stream_ui():
-    texture_data = camera_stream.consume_texture_data()
-    if texture_data and dpg.does_item_exist("camera_stream_texture"):
-        dpg.set_value("camera_stream_texture", texture_data)
+        floor_surface = self.floor_surfaces[self.active_floor_index]
+        scaled, scaled_rect = self.fit_surface(floor_surface, rect.width - 20, 86)
+        scaled_rect.centerx = rect.centerx
+        scaled_rect.y = rect.y + 64
+        self.screen.blit(scaled, scaled_rect)
+        pygame.draw.rect(self.screen, (0, 180, 216), scaled_rect, 1)
+        self.buttons.append(Button(scaled_rect, "map", "toggle_minimap"))
 
-    if dpg.does_item_exist("camera_stream_status"):
-        dpg.set_value("camera_stream_status", camera_stream.status)
+    def draw_telemetry_panel(self, rect):
+        self.draw_panel(rect, "TELEMETRY", AMBER)
+        y = rect.y + 38
+        for log in self.backend.get_logs():
+            self.draw_wrapped_text(self.screen, log, pygame.Rect(rect.x + 10, y, rect.width - 20, 34), (140, 145, 160), self.small_font)
+            y += 34
+        pygame.draw.line(self.screen, PANEL_BORDER, (rect.x + 10, rect.bottom - 70), (rect.right - 10, rect.bottom - 70))
+        self.draw_text(self.screen, "GAIN CONTROL", (rect.x + 10, rect.bottom - 58), MUTED, self.small_font)
+        pygame.draw.rect(self.screen, (32, 36, 52), (rect.x + 10, rect.bottom - 35, rect.width - 20, 8), border_radius=4)
+        pygame.draw.rect(self.screen, CYAN, (rect.x + 10, rect.bottom - 35, int((rect.width - 20) * 0.75), 8), border_radius=4)
 
-def create_radar_canvas():
-    with dpg.child_window(tag="radar_container", border=True, width=400, height=390):
-        dpg.add_text("RPI CAMERA GPU DENSEPOSE STREAM", color=(0, 255, 255))
-        dpg.add_image("camera_stream_texture", width=CAMERA_STREAM_WIDTH, height=CAMERA_STREAM_HEIGHT)
-        dpg.add_text(
-            "Pi camera -> RunPod GPU -> DensePose-only processed output",
-            color=(100, 120, 140),
-            wrap=380,
-        )
-        dpg.add_text(camera_stream.status, tag="camera_stream_status", color=(0, 255, 150), wrap=380)
-        with dpg.group(horizontal=True):
-            dpg.add_button(label="START CAMERA STREAM", width=180, height=32, callback=start_camera_stream)
-            dpg.add_button(label="STOP", width=80, height=32, callback=stop_camera_stream)
-        with dpg.group(horizontal=True):
-            dpg.add_input_int(
-                label="WIDTH",
-                tag="camera_send_width",
-                default_value=camera_stream.send_width,
-                min_value=256,
-                max_value=960,
-                width=92,
-                step=64,
-            )
-            dpg.add_input_int(
-                label="JPG",
-                tag="camera_jpeg_quality",
-                default_value=camera_stream.jpeg_quality,
-                min_value=35,
-                max_value=90,
-                width=82,
-                step=5,
-            )
-        dpg.add_slider_float(
-            label="TARGET FPS",
-            tag="camera_target_fps",
-            default_value=camera_stream.target_fps,
-            min_value=1,
-            max_value=30,
-            width=245,
-        )
-        dpg.add_input_text(
-            label="CAM",
-            tag="camera_source_input",
-            default_value=camera_stream.camera_source,
-            width=120,
-        )
-        dpg.add_input_text(
-            label="GPU WS",
-            tag="camera_stream_url_input",
-            default_value=camera_stream.ws_url,
-            width=280,
-        )
+    def draw_expanded_minimap(self):
+        self.screen.fill(BG)
+        floor = FLOOR_MAPS[self.active_floor_index]
+        self.draw_text(self.screen, f"{floor['label']} | {floor['detail']}", (20, 16), floor["color"], self.large_font)
+        for index in range(len(FLOOR_MAPS)):
+            self.draw_button(pygame.Rect(285 + index * 30, 16, 22, 22), str(index + 1), "floor", index, compact=True)
+        self.draw_button(pygame.Rect(665, 14, 110, 30), "MINIMIZE", "toggle_minimap")
+        scaled, scaled_rect = self.fit_surface(self.floor_surfaces[self.active_floor_index], 760, 390)
+        scaled_rect.center = (WIDTH // 2, 265)
+        self.screen.blit(scaled, scaled_rect)
+        pygame.draw.rect(self.screen, PANEL_BORDER, scaled_rect, 1)
 
-def create_node_panel():
-    with dpg.child_window(tag="node_panel", border=True, width=175, height=390):
-        dpg.add_text("NODES", color=(0, 255, 180))
-        dpg.add_spacer(height=5)
-        
-        with dpg.group(tag="node_list_container"):
-            pass # Updated dynamically
+    def fit_surface(self, surface, max_width, max_height):
+        width, height = surface.get_size()
+        scale = min(max_width / width, max_height / height)
+        size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        scaled = pygame.transform.smoothscale(surface, size)
+        return scaled, scaled.get_rect()
 
-        dpg.add_spacer(height=10)
-        dpg.add_button(label="SCAN MESH", width=-1, height=35)
-        dpg.add_button(label="SYSTEM REBOOT", width=-1, height=35)
+    def draw_button(self, rect, label, action, value=None, compact=False):
+        active = action == "floor" and value == self.active_floor_index
+        fill = (0, 180, 216) if active else (55, 62, 78)
+        pygame.draw.rect(self.screen, fill, rect, border_radius=5)
+        pygame.draw.rect(self.screen, CYAN if active else PANEL_BORDER, rect, 1, border_radius=5)
+        font = self.small_font if compact else self.font
+        text_surface = font.render(label, True, TEXT)
+        self.screen.blit(text_surface, text_surface.get_rect(center=rect.center))
+        if action != "noop":
+            self.buttons.append(Button(rect, label, action, value))
 
-def update_dynamic_ui():
-    # Update nodes
-    dpg.delete_item("node_list_container", children_only=True)
-    with dpg.group(parent="node_list_container"):
-        for node in backend.nodes:
-            status_color = (0, 255, 150) if node["status"] == "ONLINE" else (255, 50, 50)
-            dpg.add_text(node["name"], color=(200, 210, 255))
-            with dpg.group(horizontal=True, indent=10):
-                dpg.add_text("●", color=status_color)
-                dpg.add_text(node["status"], color=status_color)
-            dpg.add_text(f"RSSI: {node['rssi']}", color=(100, 100, 120), indent=10)
-            dpg.add_separator()
-    
-    # Update status text in header
-    dpg.set_value("status_text", f"| {backend.status['data']['status'].upper()} | {backend.status['data']['performance']['average_fps']} FPS")
+    def draw_text(self, surface, text, pos, color=TEXT, font=None):
+        font = font or self.font
+        surface.blit(font.render(str(text), True, color), pos)
 
-def create_event_log(height=220):
-    log_height = max(115, height - 125)
-
-    with dpg.child_window(tag="event_log", border=True, width=175, height=height):
-        dpg.add_text("TELEMETRY", color=(255, 200, 0))
-        with dpg.child_window(height=log_height, border=False):
-            logs = [
-                "[12:04] Mesh Sync Complete",
-                "[12:05] Movement in Sector 4",
-                "[12:06] Multi-path interference low",
-                "[12:07] Pose Decoded: Standing",
-                "[12:08] Tracking Alpha_01",
-            ]
-            for log in logs:
-                dpg.add_text(log, wrap=170, color=(140, 145, 160))
-        
-        dpg.add_spacer(height=5)
-        dpg.add_text("GAIN CONTROL", color=(100, 100, 120))
-        dpg.add_slider_float(default_value=0.75, max_value=1.0, width=-1)
-        dpg.add_spacer(height=2)
-        dpg.add_button(label="EXPORT DATA", width=-1, height=30)
-
-def create_minimap_panel():
-    floor = selected_floor()
-    preview_width, preview_height = fit_map_size(floor, 155, 92)
-
-    with dpg.child_window(
-        tag="Minimap Window",
-        border=True,
-        width=175,
-        height=160,
-        no_scrollbar=True,
-    ):
-        with dpg.group(horizontal=True, indent=34):
-            for index in range(len(FLOOR_MAPS)):
-                button_tag = f"minimap_floor_selector_{index}"
-                dpg.add_button(
-                    label=str(index + 1),
-                    tag=button_tag,
-                    width=16,
-                    height=16,
-                    callback=lambda sender, app_data, user_data: set_active_floor(user_data),
-                    user_data=index,
-                )
-                bind_floor_button_theme(button_tag, index)
-
-        dpg.add_spacer(height=1)
-        with dpg.group(tag="minimap_image_group", indent=max(0, (155 - preview_width) // 2)):
-            dpg.add_image_button(
-                floor["texture_tag"],
-                tag="minimap_preview_button",
-                width=preview_width,
-                height=preview_height,
-                background_color=(0, 180, 216, 80),
-                callback=show_expanded_minimap,
-            )
-
-def create_expanded_minimap_window():
-    floor = selected_floor()
-    map_width, map_height = fit_map_size(floor, 760, 375)
-
-    with dpg.window(
-        tag="Expanded Minimap Window",
-        show=False,
-        no_title_bar=True,
-        no_move=True,
-        no_resize=True,
-        no_collapse=True,
-        no_close=True,
-        no_scrollbar=True,
-        width=WIDTH,
-        height=HEIGHT,
-        pos=(0, 0),
-    ):
-        with dpg.group(horizontal=True, indent=276):
-            for index in range(len(FLOOR_MAPS)):
-                button_tag = f"expanded_floor_selector_{index}"
-                dpg.add_button(
-                    label=str(index + 1),
-                    tag=button_tag,
-                    width=22,
-                    height=22,
-                    callback=lambda sender, app_data, user_data: set_active_floor(user_data),
-                    user_data=index,
-                )
-                bind_floor_button_theme(button_tag, index)
-            dpg.add_spacer(width=170)
-            dpg.add_button(label="MINIMIZE", width=105, height=32, callback=hide_expanded_minimap)
-
-        with dpg.group(tag="expanded_map_image_group", indent=max(0, (780 - map_width) // 2)):
-            dpg.add_image(floor["texture_tag"], tag="expanded_floor_image", width=map_width, height=map_height)
+    def draw_wrapped_text(self, surface, text, rect, color=TEXT, font=None):
+        font = font or self.font
+        words = str(text).split()
+        lines = []
+        line = ""
+        for word in words:
+            candidate = f"{line} {word}".strip()
+            if font.size(candidate)[0] <= rect.width:
+                line = candidate
+            else:
+                if line:
+                    lines.append(line)
+                line = word
+        if line:
+            lines.append(line)
+        for index, line_text in enumerate(lines[: max(1, rect.height // font.get_height())]):
+            self.draw_text(surface, line_text, (rect.x, rect.y + index * font.get_height()), color, font)
 
 
 def main():
-    dpg.create_context()
-    load_floor_map_textures()
-    
-    # Setup for full-screen borderless appearance on the Pi
-    dpg.create_viewport(
-        title='RUVIEW COMMAND CENTER',
-        width=WIDTH,
-        height=HEIGHT,
-        resizable=False,
-        decorated=False,
-        clear_color=(15, 17, 26, 255)
-    )
-    
-    setup_theme()
-    create_floor_button_themes()
-    
-    with dpg.window(tag="Primary Window", no_title_bar=True, no_move=True, no_resize=True):
-        # Header
-        with dpg.group(horizontal=True):
-            dpg.add_text("RUVIEW SYSTEM", color=(0, 255, 255))
-            dpg.add_text("| COMMAND CENTER v1.0", color=(80, 85, 100), tag="status_text")
-            dpg.add_spacer(width=200)
-            dpg.add_button(label="SETTINGS", callback=lambda: dpg.show_item("Settings Window"))
-            
-        dpg.add_separator()
-        dpg.add_spacer(height=10)
-        
-        # Main Dashboard Layout
-        with dpg.group(horizontal=True):
-            create_node_panel()
-            create_radar_canvas()
-            with dpg.group():
-                create_minimap_panel()
-                create_event_log()
+    RuViewApp().run()
 
-    create_expanded_minimap_window()
-
-    # Settings Window (Hidden by default)
-    with dpg.window(label="System Settings", tag="Settings Window", show=False, width=300, height=200, pos=(250, 100)):
-        dpg.add_text("Backend Configuration")
-        dpg.add_checkbox(label="Use Mock Service", default_value=True, callback=lambda s, a: setattr(backend, 'use_mock', a))
-        dpg.add_input_text(label="API URL", default_value="http://localhost:8000")
-        dpg.add_separator()
-        dpg.add_button(label="Apply", callback=lambda: dpg.hide_item("Settings Window"))
-
-    dpg.set_primary_window("Primary Window", True)
-    dpg.setup_dearpygui()
-    dpg.show_viewport()
-    
-    # Main Loop
-    while dpg.is_dearpygui_running():
-        # 1. Update Backend Data
-        backend.update()
-        
-        # 2. Update HUD & Node List
-        update_dynamic_ui()
-        
-        # 3. Render the latest GPU DensePose frame returned from the RunPod stream server.
-        update_camera_stream_ui()
-        
-        dpg.render_dearpygui_frame()
-        
-    camera_stream.stop()
-    dpg.destroy_context()
 
 if __name__ == "__main__":
     main()

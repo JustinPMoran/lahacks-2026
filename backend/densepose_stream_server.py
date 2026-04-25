@@ -41,6 +41,19 @@ os.environ.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".cache" / "matplotlib"))
 if DENSEPOSE_PROJECT.exists():
     sys.path.insert(0, str(DENSEPOSE_PROJECT))
 
+try:
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+except ImportError:
+    FigureCanvasAgg = None
+
+if FigureCanvasAgg is not None and not hasattr(FigureCanvasAgg, "tostring_rgb"):
+    def _figure_canvas_agg_tostring_rgb(self):
+        self.draw()
+        rgba = np.asarray(self.buffer_rgba())
+        return rgba[:, :, :3].tobytes()
+
+    FigureCanvasAgg.tostring_rgb = _figure_canvas_agg_tostring_rgb
+
 from detectron2.config import get_cfg  # noqa: E402
 from detectron2.engine.defaults import DefaultPredictor  # noqa: E402
 from densepose import add_densepose_config  # noqa: E402
@@ -65,9 +78,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-score", type=float, default=0.8, help="Minimum person score")
     parser.add_argument(
         "--mode",
-        default="mesh",
-        choices=("densepose", "mesh", "silhouette", "u", "v", "contour"),
-        help="Rendered response mode; mesh overlays contour lines on DensePose parts",
+        default="mesh_fast",
+        choices=("densepose", "mesh_fast", "mesh", "silhouette", "u", "v", "contour"),
+        help="Rendered response mode; mesh_fast avoids Matplotlib for higher FPS",
     )
     parser.add_argument("--max-width", type=int, default=512, help="Resize incoming frames above this width")
     parser.add_argument("--jpeg-quality", type=int, default=70, help="Response JPEG quality")
@@ -91,6 +104,8 @@ def build_predictor(args: argparse.Namespace) -> tuple[DefaultPredictor, object]
 def build_visualizer(mode: str, cfg: object):
     if mode == "silhouette":
         return None
+    if mode == "mesh_fast":
+        return ("mesh_fast", DensePoseResultsFineSegmentationVisualizer(cfg=cfg, alpha=1.0))
     if mode == "mesh":
         return (
             DensePoseResultsFineSegmentationVisualizer(cfg=cfg, alpha=1.0),
@@ -117,9 +132,30 @@ def render_silhouette(frame: np.ndarray, instances) -> np.ndarray:
     return output
 
 
+def overlay_fast_mesh(output: np.ndarray) -> np.ndarray:
+    mask = np.any(output > 0, axis=2).astype(np.uint8)
+    if not mask.any():
+        return output
+
+    edges = cv2.Canny(mask * 255, 50, 150) > 0
+    output[edges] = (255, 255, 255)
+
+    # Draw a lightweight screen-space mesh clipped to the detected body.
+    mesh = np.zeros_like(output)
+    step = max(12, output.shape[1] // 28)
+    mesh[:, ::step] = (0, 255, 255)
+    mesh[::step, :] = (0, 255, 180)
+    mesh_mask = mask.astype(bool)
+    output[mesh_mask] = cv2.addWeighted(output, 0.82, mesh, 0.18, 0)[mesh_mask]
+    return output
+
+
 def render_densepose(frame: np.ndarray, instances, extractor, visualizer) -> np.ndarray:
     output = np.zeros_like(frame)
     data = extractor(instances)
+    if isinstance(visualizer, tuple) and visualizer[0] == "mesh_fast":
+        output = visualizer[1].visualize(output, data)
+        return overlay_fast_mesh(output)
     if isinstance(visualizer, tuple):
         for layer in visualizer:
             output = layer.visualize(output, data)
