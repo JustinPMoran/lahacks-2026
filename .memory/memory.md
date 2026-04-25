@@ -1,32 +1,32 @@
 # RuView Project Memory & Agent Directives
 
 ## 🧠 Project State Summary
-**As of April 25, 2026 (Refactor Phase):**
-RuView is transitioning from a static mockup to a 'Plug & Play' architecture synchronized with the original RuView repository found in `.temp`.
-- **Infrastructure**: Added a `backend/mock_service.py` to stub out the RuView v1 API (REST & WebSocket structures).
-- **Frontend**: Refactored `frontend/main.py` with a `BackendManager` that supports live/mock switching and real-time visualization updates.
-- **Hardware Profile**: Still targeted for **800x480** Freenove displays.
+**As of April 25, 2026 (Refactor Phase 2):**
+RuView has transitioned its frontend from DearPyGui to **Pygame** to ensure flawless performance on all Raspberry Pi versions, as some Pi drivers struggle with DearPyGui's GPU requirements.
+- **Infrastructure**: Backend `mock_service.py` is fully integrated and provides real-time data to the Pygame UI.
+- **Frontend**: A custom Pygame-based Command Center mirroring the original Cyberpunk aesthetic and pixel-perfect 800x480 layout.
+- **Hardware Profile**: Optimized for **800x480** Freenove DSI displays.
 
 ## 🚀 Recent Changes (April 25)
-- **Backend Stubbing**: Implemented `RuViewMockService` mirroring the official `pose/latest`, `system/status`, and node sensing data structures.
-- **GUI Dynamism**:
-    - The **Node Manager** now updates status and RSSI in real-time based on backend data.
-    - The **DensePose Feed** now moves and tracks simulated detections instead of being static.
-    - Added a **Settings Window** to allow toggling between Mock and Live backend modes.
-- **Git Management**: Added `.temp/` to `.gitignore` to prevent tracking of the large external RuView repository while keeping it available for reference.
-- **Dependency Management**: Created `requirements.txt` and `requirements.md`.
+- **GUI Engine Swap**: Replaced DearPyGui with Pygame. 
+    - **Implementation**: Custom UI rendering loop in `frontend/main.py` with hand-drawn panels, telemetry logs, and node status displays.
+    - **Visual Fidelity**: Maintained the exact same color palette, layout, and "DensePose Reconstruction" point cloud logic.
+- **Backend Sync**: Pygame loop now polls `BackendManager` at 30 FPS for telemetry and pose data.
+- **Dependency Update**: Swapped `dearpygui` for `pygame` in `requirements.txt` and `requirements.md`.
 
 ## 🛠 Design Tokens & Constraints
-- **Aesthetic**: Cyberpunk High-Contrast (unchanged).
-- **Resolution**: **800x480**.
-- **Agent Instruction Sync**: All files updated with the new mandatory comment: 
-    > `# After making your desired changes, update .memory/memory.md with what you did and why. Read it before each task.`
+- **Aesthetic**: Cyberpunk High-Contrast.
+- **Primary**: Neon Cyan `(0, 255, 255)`
+- **Accent**: Amber `(255, 200, 0)`
+- **Background**: Deep Navy `(15, 17, 26)`
+- **Resolution**: Pixel-perfect **800x480**. Do not exceed these dimensions.
+- **Rendering**: Pygame Surface blitting with alpha support for DensePose "flicker" effect.
 
 ## 📂 Project Structure & Manifest
 - **[.memory/memory.md](file:///.memory/memory.md)**: Master Agent Instruction file.
 - **[backend/mock_service.py](file:///backend/mock_service.py)**: Mock API suite for frontend testing.
-- **[frontend/main.py](file:///frontend/main.py)**: Primary GUI application with real-time pose tracking.
-- **[requirements.txt](file:///requirements.txt)**: Dependency list for pip.
+- **[frontend/main.py](file:///frontend/main.py)**: **Pygame** GUI application.
+- **[requirements.txt](file:///requirements.txt)**: Dependency list (Pygame, etc.).
 - **[requirements.md](file:///requirements.md)**: Human-readable dependency documentation.
 - **[.temp/RuView](file:///.temp/RuView)**: Original project source (excluded from Git).
 
@@ -40,4 +40,4 @@ RuView is transitioning from a static mockup to a 'Plug & Play' architecture syn
 > 4. Updated project state/milestones.
 
 ---
-*Your project is now fully "agent-aware" and preserves all design choices for future collaboration! 🚀🏛️*
+*Your project is now optimized for Raspberry Pi deployment while preserving its state-of-the-art look! 🚀🏛️*

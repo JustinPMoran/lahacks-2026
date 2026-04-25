@@ -5,7 +5,7 @@
 The following packages are required to run the Command Center GUI and connect to the backend services.
 
 ### Core GUI
-- `dearpygui`: High-performance GPU-accelerated GUI framework.
+- `pygame`: High-performance 2D architecture, better compatibility with Raspberry Pi hardware.
 
 ### Networking (Live Mode)
 - `requests`: Required for REST API communication (System status, settings).
