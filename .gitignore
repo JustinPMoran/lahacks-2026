@@ -27,8 +27,5 @@ Thumbs.db
 *.log
 ini_file.ini
 
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
+# External / Temporary
+.temp/

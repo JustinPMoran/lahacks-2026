@@ -3,10 +3,42 @@ import dearpygui.dearpygui as dpg
 import random
 import math
 import time
+import sys
+import os
+
+# Ensure backend can be imported
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from backend.mock_service import RuViewMockService
 
 # Configuration for the 5/7 inch screen (800x480)
 WIDTH = 800
 HEIGHT = 480
+
+class BackendManager:
+    """Manages connection to the RuView API (Mock or Live)"""
+    def __init__(self):
+        self.mock = RuViewMockService()
+        self.use_mock = True
+        self.backend_url = "http://localhost:8000"
+        self.last_pose = None
+        self.nodes = []
+        self.logs = []
+
+    def update(self):
+        if self.use_mock:
+            self.last_pose = self.mock.get_latest_pose()
+            self.nodes = self.mock.get_nodes()
+            self.status = self.mock.get_system_status()
+        # Live implementation would fetch from self.backend_url via requests/websockets here
+
+    def get_logs(self):
+        # Placeholder for telemetry sync
+        return [
+            f"[SYNC] {time.strftime('%H:%M:%S')} - Model: {self.status['data']['performance']['average_fps']} FPS",
+            f"[NODE] Online Count: {len([n for n in self.nodes if n['status'] == 'ONLINE'])}"
+        ]
+
+backend = BackendManager()
 
 def setup_theme():
     with dpg.theme() as global_theme:
@@ -50,9 +82,31 @@ def setup_theme():
 
     dpg.bind_theme(global_theme)
 
+def draw_dense_pose(center_x, center_y):
+    # Faking DensePose UV/Part points
+    # Each part is a cluster of points with a specific color logic
+    parts = [
+        {"name": "torso", "color": (0, 255, 255), "spread_x": 20, "spread_y": 40, "offset_y": 30, "count": 25},
+        {"name": "head", "color": (255, 200, 0), "spread_x": 12, "spread_y": 12, "offset_y": -15, "count": 12},
+        {"name": "l_arm", "color": (0, 255, 150), "spread_x": 8, "spread_y": 30, "offset_x": -25, "offset_y": 45, "count": 15},
+        {"name": "r_arm", "color": (0, 255, 150), "spread_x": 8, "spread_y": 30, "offset_x": 25, "offset_y": 45, "count": 15},
+        {"name": "l_leg", "color": (0, 150, 255), "spread_x": 10, "spread_y": 40, "offset_x": -12, "offset_y": 105, "count": 20},
+        {"name": "r_leg", "color": (0, 150, 255), "spread_x": 10, "spread_y": 40, "offset_x": 12, "offset_y": 105, "count": 20},
+    ]
+    
+    for part in parts:
+        for _ in range(part.get("count", 10)):
+            # Random jitter for 'cloud' effect
+            px = center_x + part.get("offset_x", 0) + (random.random() - 0.5) * part["spread_x"] * 2
+            py = center_y + part.get("offset_y", 0) + (random.random() - 0.5) * part["spread_y"] * 2
+            
+            # Draw point with slight transparency
+            alpha = random.randint(100, 200)
+            dpg.draw_circle((px, py), 1.5, color=(*part["color"], alpha), fill=(*part["color"], alpha // 2), parent="spatial_drawlist")
+
 def create_radar_canvas():
     with dpg.child_window(tag="radar_container", border=True, width=400, height=390):
-        dpg.add_text("WIFI SPATIAL FEED", color=(0, 255, 255))
+        dpg.add_text("DENSEPOSE RECONSTRUCTION", color=(0, 255, 255))
         with dpg.drawlist(width=380, height=330, tag="spatial_drawlist"):
             # Grid
             for i in range(0, 371, 30):
@@ -64,49 +118,40 @@ def create_radar_canvas():
             for r in range(60, 240, 60):
                 dpg.draw_circle(center, r, color=(0, 180, 216, 40), thickness=1)
             
-            # Scanning Sweep Line (Static for now)
-            dpg.draw_line(center, (center[0] + 150, center[1] - 80), color=(0, 255, 255, 100), thickness=2)
+            # THE DENSE POSE
+            draw_dense_pose(200, 130)
             
-            # THE POSE (Mock DensePose style)
-            # Head
-            dpg.draw_circle((200, 120), 8, color=(0, 255, 150), fill=(0, 255, 150, 50))
-            # Torso
-            dpg.draw_line((200, 128), (200, 180), color=(0, 255, 150), thickness=3)
-            # Arms
-            dpg.draw_line((200, 140), (180, 160), color=(0, 255, 150), thickness=2)
-            dpg.draw_line((200, 140), (220, 160), color=(0, 255, 150), thickness=2)
-            # Legs
-            dpg.draw_line((200, 180), (185, 220), color=(0, 255, 150), thickness=2)
-            dpg.draw_line((200, 180), (215, 220), color=(0, 255, 150), thickness=2)
-            
-            dpg.draw_text((230, 110), "ID: ALPHA_01", color=(0, 255, 150))
-            dpg.draw_text((230, 125), "CONF: 94.2%", color=(0, 255, 150, 150))
+            dpg.draw_text((235, 105), "ID: ALPHA_01", color=(0, 255, 255))
+            dpg.draw_text((235, 120), "MODEL: DensePose-RCNN", color=(100, 120, 140))
+            dpg.draw_text((235, 135), "CONF: 94.2%", color=(0, 255, 150))
 
 def create_node_panel():
     with dpg.child_window(tag="node_panel", border=True, width=175, height=390):
         dpg.add_text("NODES", color=(0, 255, 180))
         dpg.add_spacer(height=5)
         
-        nodes = [
-            {"name": "GATEWAY", "ip": "192.168.1.45", "status": "ONLINE", "rssi": "-42dBm"},
-            {"name": "NODE_ALPHA", "ip": "192.168.1.46", "status": "ONLINE", "rssi": "-56dBm"},
-            {"name": "NODE_BETA", "ip": "192.168.1.47", "status": "OFFLINE", "rssi": "N/A"},
-        ]
-        
-        for node in nodes:
-            with dpg.group():
-                status_color = (0, 255, 150) if node["status"] == "ONLINE" else (255, 50, 50)
-                dpg.add_text(node["name"], color=(200, 210, 255))
-                with dpg.group(horizontal=True, indent=10):
-                    dpg.add_text("●", color=status_color)
-                    dpg.add_text(node["status"], color=status_color)
-                dpg.add_text(f"RSSI: {node['rssi']}", color=(100, 100, 120), indent=10)
-                dpg.add_spacer(height=4)
-                dpg.add_separator()
+        with dpg.group(tag="node_list_container"):
+            pass # Updated dynamically
 
         dpg.add_spacer(height=10)
         dpg.add_button(label="SCAN MESH", width=-1, height=35)
         dpg.add_button(label="SYSTEM REBOOT", width=-1, height=35)
+
+def update_dynamic_ui():
+    # Update nodes
+    dpg.delete_item("node_list_container", children_only=True)
+    with dpg.group(parent="node_list_container"):
+        for node in backend.nodes:
+            status_color = (0, 255, 150) if node["status"] == "ONLINE" else (255, 50, 50)
+            dpg.add_text(node["name"], color=(200, 210, 255))
+            with dpg.group(horizontal=True, indent=10):
+                dpg.add_text("●", color=status_color)
+                dpg.add_text(node["status"], color=status_color)
+            dpg.add_text(f"RSSI: {node['rssi']}", color=(100, 100, 120), indent=10)
+            dpg.add_separator()
+    
+    # Update status text in header
+    dpg.set_value("status_text", f"| {backend.status['data']['status'].upper()} | {backend.status['data']['performance']['average_fps']} FPS")
 
 def create_event_log():
     with dpg.child_window(tag="event_log", border=True, width=175, height=390):
@@ -148,7 +193,9 @@ def main():
         # Header
         with dpg.group(horizontal=True):
             dpg.add_text("RUVIEW SYSTEM", color=(0, 255, 255))
-            dpg.add_text("| COMMAND CENTER v1.0", color=(80, 85, 100))
+            dpg.add_text("| COMMAND CENTER v1.0", color=(80, 85, 100), tag="status_text")
+            dpg.add_spacer(width=200)
+            dpg.add_button(label="SETTINGS", callback=lambda: dpg.show_item("Settings Window"))
             
         dpg.add_separator()
         dpg.add_spacer(height=10)
@@ -159,20 +206,50 @@ def main():
             create_radar_canvas()
             create_event_log()
 
+    # Settings Window (Hidden by default)
+    with dpg.window(label="System Settings", tag="Settings Window", show=False, width=300, height=200, pos=(250, 100)):
+        dpg.add_text("Backend Configuration")
+        dpg.add_checkbox(label="Use Mock Service", default_value=True, callback=lambda s, a: setattr(backend, 'use_mock', a))
+        dpg.add_input_text(label="API URL", default_value="http://localhost:8000")
+        dpg.add_separator()
+        dpg.add_button(label="Apply", callback=lambda: dpg.hide_item("Settings Window"))
+
     dpg.set_primary_window("Primary Window", True)
     dpg.setup_dearpygui()
     dpg.show_viewport()
     
     # Main Loop
-    # dpg.start_dearpygui() # Standard approach
-    
-    # Custom loop for potential animation updates
     while dpg.is_dearpygui_running():
-        # Update simulation/data here
-        # Example: Pulse the detected entity
-        t = time.time()
-        alpha = int(127 + 127 * math.sin(t * 4))
-        # dpg.configure_item("detected_entity", fill=(255, 50, 50, alpha)) # Example update
+        # 1. Update Backend Data
+        backend.update()
+        
+        # 2. Update HUD & Node List
+        update_dynamic_ui()
+        
+        # 3. Render Pose from Backend Data
+        dpg.delete_item("spatial_drawlist", children_only=True)
+        
+        # Redraw static grid/rings (or keep them out of children_only if tagged differently)
+        # For simplicity, we just redraw the pose on top of the existing list if we don't clear,
+        # but to move it, we must clear.
+        # Let's move the GRID/RINGS to a static layer or just redraw them:
+        
+        # Grid
+        for i in range(0, 371, 30):
+            dpg.draw_line((i, 0), (i, 360), color=(30, 35, 50, 255), parent="spatial_drawlist")
+            dpg.draw_line((0, i), (370, i), color=(30, 35, 50, 255), parent="spatial_drawlist")
+        # Rings
+        for r in range(60, 240, 60):
+            dpg.draw_circle((185, 180), r, color=(0, 180, 216, 40), thickness=1, parent="spatial_drawlist")
+
+        if backend.last_pose:
+            person = backend.last_pose["data"]["persons"][0]
+            center = person["center"]
+            draw_dense_pose(center["x"], center["y"])
+            
+            dpg.draw_text((235, 105), f"ID: {person['track_id']}", color=(0, 255, 255), parent="spatial_drawlist")
+            dpg.draw_text((235, 120), "MODEL: DensePose-RCNN", color=(100, 120, 140), parent="spatial_drawlist")
+            dpg.draw_text((235, 135), f"CONF: {int(person['confidence'] * 100)}%", color=(0, 255, 150), parent="spatial_drawlist")
         
         dpg.render_dearpygui_frame()
         
