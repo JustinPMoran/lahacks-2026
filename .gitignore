@@ -2,9 +2,6 @@
 # Python Virtual Environments
 venv/
 .venv/
-env/
-.env/
-ENV/
 bin/
 lib/
 share/
@@ -30,6 +27,9 @@ ini_file.ini
 # External / Temporary
 .temp/
 vendor/
+
+# Local secrets
+.env
 
 # ESP-IDF firmware build artifacts (under backend/firmware/)
 backend/firmware/*/build/
