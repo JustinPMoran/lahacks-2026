@@ -14,6 +14,7 @@ RuView is transitioning from a static mockup to a 'Plug & Play' architecture syn
     - The **DensePose Feed** now moves and tracks simulated detections instead of being static.
     - Added a **Settings Window** to allow toggling between Mock and Live backend modes.
 - **Git Management**: Added `.temp/` to `.gitignore` to prevent tracking of the large external RuView repository while keeping it available for reference.
+- **Dependency Management**: Created `requirements.txt` and `requirements.md`.
 
 ## 🛠 Design Tokens & Constraints
 - **Aesthetic**: Cyberpunk High-Contrast (unchanged).
@@ -25,6 +26,8 @@ RuView is transitioning from a static mockup to a 'Plug & Play' architecture syn
 - **[.memory/memory.md](file:///.memory/memory.md)**: Master Agent Instruction file.
 - **[backend/mock_service.py](file:///backend/mock_service.py)**: Mock API suite for frontend testing.
 - **[frontend/main.py](file:///frontend/main.py)**: Primary GUI application with real-time pose tracking.
+- **[requirements.txt](file:///requirements.txt)**: Dependency list for pip.
+- **[requirements.md](file:///requirements.md)**: Human-readable dependency documentation.
 - **[.temp/RuView](file:///.temp/RuView)**: Original project source (excluded from Git).
 
 ## 🤖 AI Agent Instructions (MANDATORY)
