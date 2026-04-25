@@ -73,3 +73,21 @@ RuView is transitioning from a static mockup to a 'Plug & Play' architecture syn
 
 ---
 *Your project is now fully "agent-aware" and preserves all design choices for future collaboration! 🚀🏛️*
+
+## April 25, 2026 Addendum (Twilio Patient Alerts)
+- Updated `frontend/main.py` with a `TwilioPatientAlert` helper that calls Twilio's Calls API whenever the `patients` tag set changes.
+- Added a `+ PATIENT` tag mode in the expanded map toolbar so patient tags can be placed directly from the UI.
+- Wired patient-tag mutations to trigger outbound calls to `TWILIO_PATIENT_ALERT_TO` (defaults to `+17605768000`), with optional cooldown via `TWILIO_PATIENT_ALERT_COOLDOWN_SECONDS`.
+- Updated `CLEAR TAGS` to also reset `patients`, and to trigger the Twilio alert when patients were previously present.
+- Updated `.env.example` with the required Twilio env vars.
+- Rationale: this creates an immediate operator phone ping path tied to patient-tag updates, matching incident-response needs without adding new runtime dependencies.
+
+## April 25, 2026 Addendum (Twilio Test Script)
+- Added `test_twilio_patient_ping.py` at the repo root.
+- The script loads Twilio env vars and places a direct test call with optional flags (`--to`, `--floor`, `--patient-count`, `--dry-run`).
+- Rationale: enables one-command verification of patient alert calling without opening the frontend UI.
+
+## April 25, 2026 Addendum (Twilio MP3 Playback)
+- Updated `frontend/main.py` and `test_twilio_patient_ping.py` so Twilio uses `<Play>` when `TWILIO_PATIENT_ALERT_AUDIO_URL` is set.
+- If no audio URL is provided, behavior falls back to the existing `<Say>` text announcement.
+- Rationale: allows calls to play a repository-provided MP3 once it is hosted at a public HTTPS URL that Twilio can fetch.

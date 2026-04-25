@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import io
 import math
 import os
@@ -12,6 +13,15 @@ import time
 from dataclasses import dataclass
 
 import pygame
+import requests
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 # Ensure backend can be imported when running from frontend/ or the repo root.
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -189,6 +199,75 @@ class BackendManager:
             "[POSE] RunPod stream target active",
             "[TRACK] Awaiting processed DensePose frame",
         ]
+
+
+class TwilioPatientAlert:
+    """Places a phone call when patient tags change."""
+
+    def __init__(self):
+        self.account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+        self.api_key_sid = os.environ.get("TWILIO_API_KEY_SID", "").strip()
+        self.api_key_secret = os.environ.get("TWILIO_API_KEY_SECRET", "").strip()
+        self.from_number = os.environ.get("TWILIO_FROM_NUMBER", "").strip()
+        self.to_number = os.environ.get("TWILIO_PATIENT_ALERT_TO", "+17605768000").strip()
+        self.audio_url = os.environ.get("TWILIO_PATIENT_ALERT_AUDIO_URL", "").strip()
+        self.cooldown_seconds = max(0.0, float(os.environ.get("TWILIO_PATIENT_ALERT_COOLDOWN_SECONDS", "0")))
+        self.call_timeout_seconds = max(1.0, float(os.environ.get("TWILIO_CALL_TIMEOUT_SECONDS", "10")))
+        self.last_call_monotonic = 0.0
+
+    def _is_configured(self) -> bool:
+        return all([self.account_sid, self.api_key_sid, self.api_key_secret, self.from_number, self.to_number])
+
+    def notify_patients_changed(self, *, floor_label: str, patient_count: int) -> bool:
+        if not self._is_configured():
+            print(
+                "twilio patient alert skipped | missing TWILIO_ACCOUNT_SID/TWILIO_API_KEY_SID/"
+                "TWILIO_API_KEY_SECRET/TWILIO_FROM_NUMBER",
+                flush=True,
+            )
+            return False
+
+        now = time.monotonic()
+        elapsed = now - self.last_call_monotonic
+        if self.last_call_monotonic and elapsed < self.cooldown_seconds:
+            print(
+                f"twilio patient alert cooldown | {self.cooldown_seconds - elapsed:.1f}s remaining",
+                flush=True,
+            )
+            return False
+
+        call_text = f"RuView alert. Patients tag changed on {floor_label}. Total tagged patients: {patient_count}."
+        if self.audio_url:
+            twiml = f"<Response><Play>{html.escape(self.audio_url)}</Play></Response>"
+        else:
+            twiml = f"<Response><Say voice='alice'>{html.escape(call_text)}</Say></Response>"
+        payload = {"To": self.to_number, "From": self.from_number, "Twiml": twiml}
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Calls.json"
+
+        try:
+            response = requests.post(
+                url,
+                data=payload,
+                auth=(self.api_key_sid, self.api_key_secret),
+                timeout=self.call_timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            print(f"twilio patient alert failed | {exc}", flush=True)
+            return False
+
+        if response.status_code >= 300:
+            err = response.text.strip().replace("\n", " ")
+            print(f"twilio patient alert rejected | status={response.status_code} | {err[:240]}", flush=True)
+            return False
+
+        call_sid = "unknown"
+        try:
+            call_sid = response.json().get("sid", "unknown")
+        except ValueError:
+            pass
+        self.last_call_monotonic = now
+        print(f"twilio patient alert call queued | sid={call_sid} | to={self.to_number}", flush=True)
+        return True
 
 
 class CameraDensePoseStream:
@@ -487,9 +566,10 @@ class RuViewApp:
         self.preview_map_rect: pygame.Rect | None = None
         # User-tagged markers (per-floor). Each bucket is appended to the static seed at render time.
         self.user_tags = {
-            i: {"trapped": [], "hazards": [], "events": []} for i in range(len(FLOOR_MAPS))
+            i: {"trapped": [], "hazards": [], "events": [], "patients": []} for i in range(len(FLOOR_MAPS))
         }
-        self.tag_mode: str | None = None    # None | "trapped" | "hazards" | "events"
+        self.tag_mode: str | None = None    # None | "trapped" | "hazards" | "events" | "patients"
+        self.patient_alert = TwilioPatientAlert()
         if os.environ.get("RUVIEW_AUTOSTART_STREAM", "0") == "1":
             self.camera_stream.start()
 
@@ -567,7 +647,10 @@ class RuViewApp:
                 elif button.action == "set_tag_mode":
                     self.tag_mode = None if self.tag_mode == button.value else button.value
                 elif button.action == "clear_tags":
-                    self.user_tags[self.active_floor_index] = {"trapped": [], "hazards": [], "events": []}
+                    had_patients = bool(self.user_tags[self.active_floor_index].get("patients"))
+                    self.user_tags[self.active_floor_index] = {"trapped": [], "hazards": [], "events": [], "patients": []}
+                    if had_patients:
+                        self._notify_patients_tag_changed()
                     self.selected_target = None
                 return
 
@@ -596,8 +679,16 @@ class RuViewApp:
             bucket.append({"x": rx, "y": ry, "label": f"VIC*{n}", "status": "DETECTED", "user": True})
         elif self.tag_mode == "hazards":
             bucket.append({"x": rx, "y": ry, "type": "TAG", "user": True})
+        elif self.tag_mode == "patients":
+            bucket.append({"x": rx, "y": ry, "label": f"PAT*{n}", "status": "PATIENT", "user": True})
+            self._notify_patients_tag_changed()
         else:  # events
             bucket.append({"x": rx, "y": ry, "label": f"EVT*{n}", "user": True})
+
+    def _notify_patients_tag_changed(self):
+        floor_label = FLOOR_MAPS[self.active_floor_index]["label"]
+        patient_count = len(self.user_tags[self.active_floor_index].get("patients", []))
+        self.patient_alert.notify_patients_changed(floor_label=floor_label, patient_count=patient_count)
 
     def _toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
@@ -690,10 +781,12 @@ class RuViewApp:
         floor = FLOOR_MAPS[floor_index]
         base = FLOOR_ENTITIES.get(floor["asset"], {})
         tags = self.user_tags.get(floor_index, {})
+        patient_tags = list(tags.get("patients", []))
         return {
             "self": base.get("self"),
             "teammates": base.get("teammates", []),
-            "trapped": list(base.get("trapped", [])) + list(tags.get("trapped", [])),
+            "trapped": list(base.get("trapped", [])) + list(tags.get("trapped", [])) + patient_tags,
+            "patients": patient_tags,
             "hazards": list(base.get("hazards", [])) + list(tags.get("hazards", [])),
             "events": list(tags.get("events", [])),
             "nodes": base.get("nodes", []),
@@ -1120,16 +1213,22 @@ class RuViewApp:
         self.draw_button(pygame.Rect(10, toolbar_y, 92, 26), "+ HAZARD",  "set_tag_mode", "hazards", compact=True)
         self.draw_button(pygame.Rect(108, toolbar_y, 96, 26), "+ TRAPPED", "set_tag_mode", "trapped", compact=True)
         self.draw_button(pygame.Rect(210, toolbar_y, 88, 26), "+ EVENT",   "set_tag_mode", "events",  compact=True)
-        self.draw_button(pygame.Rect(304, toolbar_y, 96, 26), "CLEAR TAGS", "clear_tags", compact=True)
+        self.draw_button(pygame.Rect(304, toolbar_y, 98, 26), "+ PATIENT", "set_tag_mode", "patients", compact=True)
+        self.draw_button(pygame.Rect(408, toolbar_y, 102, 26), "CLEAR TAGS", "clear_tags", compact=True)
 
         if self.tag_mode is not None:
-            mode_label = {"trapped": "TRAPPED", "hazards": "HAZARD", "events": "EVENT"}[self.tag_mode]
-            mode_color = {"trapped": COLOR_TRAPPED, "hazards": COLOR_HAZARD, "events": COLOR_EVENT}[self.tag_mode]
-            hint = f"TAG MODE: {mode_label} - click on the map to drop. Click button again to exit."
-            self.draw_text(self.screen, hint, (410, toolbar_y + 6), mode_color, self.small_font)
+            mode_label = {"trapped": "TRAPPED", "hazards": "HAZARD", "events": "EVENT", "patients": "PATIENT"}[self.tag_mode]
+            mode_color = {
+                "trapped": COLOR_TRAPPED,
+                "hazards": COLOR_HAZARD,
+                "events": COLOR_EVENT,
+                "patients": GREEN,
+            }[self.tag_mode]
+            hint = f"{mode_label} TAG MODE | CLICK MAP TO DROP"
+            self.draw_text(self.screen, hint, (520, toolbar_y + 6), mode_color, self.small_font)
         else:
-            hint = "TAP A RED OR CYAN DOT TO LOCK | M MINIMIZE | X UNLOCK"
-            self.draw_text(self.screen, hint, (410, toolbar_y + 6), TEXT_DIM, self.small_font)
+            hint = "LOCK TARGET: TAP RED/CYAN DOT | X UNLOCK"
+            self.draw_text(self.screen, hint, (520, toolbar_y + 6), TEXT_DIM, self.small_font)
 
     def fit_surface(self, surface, max_width, max_height):
         width, height = surface.get_size()
