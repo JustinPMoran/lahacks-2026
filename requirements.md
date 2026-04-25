@@ -11,6 +11,9 @@ The following packages are required to run the Command Center GUI and connect to
 - `requests`: Required for REST API communication (System status, settings).
 - `websockets`: Required for high-frequency real-time DensePose streaming.
 
+### Camera Streaming
+- `opencv-python`: Captures the MacBook webcam, JPEG-encodes frames for the GPU, and decodes rendered DensePose frames for the frontend texture.
+
 ### Installation
 You can install all dependencies using:
 ```bash

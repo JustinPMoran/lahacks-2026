@@ -2,6 +2,7 @@
 dearpygui
 requests
 websockets
+opencv-python
 
 # CSI motion pipeline (backend/)
 pyserial
