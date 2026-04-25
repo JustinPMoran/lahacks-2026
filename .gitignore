@@ -2,6 +2,11 @@
 # Python Virtual Environments
 venv/
 .venv/
+.venv-densepose/
+env/
+.env
+.env/
+ENV/
 bin/
 lib/
 share/
@@ -23,6 +28,7 @@ Thumbs.db
 # DearPyGui / Graphics specific
 *.log
 ini_file.ini
+.cache/
 
 # External / Temporary
 .temp/
@@ -37,3 +43,5 @@ backend/firmware/*/managed_components/
 backend/firmware/*/dependencies.lock
 backend/firmware/*/sdkconfig
 backend/firmware/*/sdkconfig.old
+
+detectron2/*

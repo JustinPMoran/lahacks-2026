@@ -8,6 +8,15 @@ RuView is transitioning from a static mockup to a 'Plug & Play' architecture syn
 - **Hardware Profile**: Still targeted for **800x480** Freenove displays.
 
 ## 🚀 Recent Changes (April 25)
+- **DensePose Stream FPS/Detail Optimization**: Tuned the MacBook -> RunPod stream for higher practical FPS by sending 512px-wide JPEG frames at quality 60, disabling WebSocket compression for already-compressed frames, adding frontend controls for send width/JPEG quality/target FPS, and running the GPU server in `mesh` mode. The `mesh` renderer overlays DensePose fine segmentation with contour lines for more detailed person surface mapping while keeping the frame payload smaller than raw video.
+- **MacBook -> RunPod DensePose Stream**: Added `backend/densepose_stream_server.py`, a GPU WebSocket inference server that accepts JPEG webcam frames and returns rendered DensePose JPEG frames. Replaced the frontend's fake DensePose reconstruction panel with a MacBook GPU stream panel that captures the local webcam, sends frames to `ws://127.0.0.1:8765`, and updates a DearPyGui dynamic texture with the GPU output. This creates the development bridge for MacBook webcam now and Raspberry Pi camera later.
+- **DensePose Webcam POC**: Added `backend/densepose_webcam.py`, a local webcam proof-of-concept script that runs Detectron2 DensePose on camera frames and renders either DensePose output or a white silhouette on a black background. This supports MacBook CPU development now while keeping the same input/output behavior intended for a future CUDA/RunPod deployment.
+- **DensePose Mac Setup**: Installed the local Detectron2 and DensePose checkouts into `.venv-densepose` using `--no-build-isolation` so their setup scripts can import the already-installed PyTorch package. Added `.venv-densepose/` and `.cache/` to `.gitignore`; the webcam script sets `MPLCONFIGDIR` to the local cache path to avoid user-home Matplotlib cache writes.
+- **RunPod Camera Streaming**: Standardized on `backend/densepose_stream_server.py`, a WebSocket server intended for RunPod/CUDA that accepts JPEG camera frames and returns processed JPEG frames with black output when no person is detected. Generalized the frontend stream panel from MacBook-only naming to a Pi camera source controlled by `DENSEPOSE_CAMERA_SOURCE`, while still using `DENSEPOSE_WS_URL` for the RunPod endpoint.
+- **Tactical Minimap**: Added a Call of Duty-style minimap overlay to `frontend/main.py`. The collapsed top-right preview opens into a larger facility map window with a dedicated MINIMIZE button and floor switching controls for Levels 1-4.
+- **Minimap Layout Adjustment**: Reworked the compact minimap into the dashboard's right column above Telemetry, shortening the Telemetry panel so it sits flush below the map instead of being covered by it.
+- **Minimap Expansion UX**: Enlarged and centered floor-plan images, replaced minimap header text with compact neutral floor selectors, and made the expanded minimap occupy the full 800x480 viewport.
+- **Map Assets**: Copied the four supplied Pauley Pavilion floor screenshots into `frontend/assets/floors/` with stable filenames so DearPyGui can load them as static textures.
 - **Backend Stubbing**: Implemented `RuViewMockService` mirroring the official `pose/latest`, `system/status`, and node sensing data structures.
 - **GUI Dynamism**:
     - The **Node Manager** now updates status and RSSI in real-time based on backend data.
@@ -37,6 +46,7 @@ RuView is transitioning from a static mockup to a 'Plug & Play' architecture syn
 ## 📂 Project Structure & Manifest
 - **[.memory/memory.md](file:///.memory/memory.md)**: Master Agent Instruction file.
 - **[backend/mock_service.py](file:///backend/mock_service.py)**: Mock API suite for frontend testing.
+- **[backend/densepose_stream_server.py](file:///backend/densepose_stream_server.py)**: RunPod/GPU WebSocket inference server for streamed camera frames.
 - **[backend/csi.py](file:///backend/csi.py)**: CSI parser + motion feature helpers (shared lib).
 - **[backend/motion_plot.py](file:///backend/motion_plot.py)**: Live per-sender motion dashboard + CSI waterfall.
 - **[backend/motion_monitor.py](file:///backend/motion_monitor.py)**: Terminal motion bar (no GUI).
