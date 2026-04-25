@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -102,6 +104,8 @@ class CameraDensePoseStream:
         self.status = "idle | press START when GPU server is ready"
         self.latest_frame = None
         self.last_fps = 0.0
+        self.frame_count = 0
+        self.latest_frame_path = os.environ.get("RUVIEW_LATEST_FRAME_PATH", "/tmp/ruview_frontend_latest.jpg")
 
     def start(self):
         if self.is_running():
@@ -131,13 +135,21 @@ class CameraDensePoseStream:
 
     def _set_status(self, status):
         with self.lock:
-            self.status = status
+            if status != self.status:
+                print(status, flush=True)
+                self.status = status
 
-    def _publish_frame(self, frame, cv2):
-        resized = cv2.resize(frame, (CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT), interpolation=cv2.INTER_AREA)
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    def _publish_frame(self, frame_bytes):
+        self.frame_count += 1
+        try:
+            with open(self.latest_frame_path, "wb") as frame_file:
+                frame_file.write(frame_bytes)
+        except OSError:
+            pass
+        if self.frame_count % 5 == 0:
+            print(f"received processed frame {self.frame_count}", flush=True)
         with self.lock:
-            self.latest_frame = rgb.copy()
+            self.latest_frame = bytes(frame_bytes)
 
     def _run_thread(self):
         try:
@@ -153,11 +165,19 @@ class CameraDensePoseStream:
 
     async def _stream_loop(self):
         try:
-            import cv2
-            import numpy as np
             import websockets
         except ImportError as exc:
             self._set_status(f"missing dependency | pip install {exc.name}")
+            return
+
+        if self.camera_source.lower() in {"rpicam", "libcamera"}:
+            await self._rpicam_stream_loop(websockets)
+            return
+
+        try:
+            import cv2
+        except ImportError:
+            await self._rpicam_stream_loop(websockets)
             return
 
         capture = cv2.VideoCapture(self._opencv_camera_source())
@@ -204,12 +224,11 @@ class CameraDensePoseStream:
                         self._set_status(response)
                         continue
 
-                    output = cv2.imdecode(np.frombuffer(response, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    if output is None:
-                        self._set_status("decode error | bad GPU response frame")
+                    if not response:
+                        self._set_status("decode error | empty GPU response frame")
                         continue
 
-                    self._publish_frame(output, cv2)
+                    self._publish_frame(response)
                     now = time.perf_counter()
                     fps = 1.0 / max(now - last_frame_time, 1e-6)
                     self.last_fps = 0.85 * self.last_fps + 0.15 * fps if self.last_fps else fps
@@ -224,6 +243,114 @@ class CameraDensePoseStream:
                         await asyncio.sleep(sleep_for)
         finally:
             capture.release()
+
+    async def _rpicam_stream_loop(self, websockets):
+        height = max(1, int(self.send_width * 9 / 16))
+        command = [
+            "rpicam-vid",
+            "--nopreview",
+            "--width",
+            str(self.send_width),
+            "--height",
+            str(height),
+            "--framerate",
+            str(max(1, int(self.target_fps))),
+            "--timeout",
+            "0",
+            "--codec",
+            "mjpeg",
+            "--quality",
+            str(self.jpeg_quality),
+            "--segment",
+            "1",
+            "--output",
+            "-",
+        ]
+
+        self._set_status("opencv unavailable | using rpicam-vid MJPEG stream")
+        process = None
+        try:
+            async with websockets.connect(
+                self.ws_url,
+                max_size=8_000_000,
+                compression=None,
+                ping_interval=20,
+                ping_timeout=20,
+            ) as websocket:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=0,
+                )
+                self._set_status(f"connected via rpicam-vid | {self.ws_url}")
+                last_frame_time = time.perf_counter()
+                jpeg_buffer = bytearray()
+
+                while not self.stop_event.is_set():
+                    loop_started = time.perf_counter()
+                    if process.poll() is not None:
+                        self._set_status(f"rpicam-vid exited | code {process.returncode}")
+                        break
+
+                    frame = self._read_mjpeg_frame(process, jpeg_buffer)
+                    if frame is None:
+                        await asyncio.sleep(1.0)
+                        continue
+
+                    await websocket.send(frame)
+                    response = await asyncio.wait_for(websocket.recv(), timeout=20)
+                    if isinstance(response, str):
+                        self._set_status(response)
+                        continue
+
+                    self._publish_frame(response)
+                    now = time.perf_counter()
+                    fps = 1.0 / max(now - last_frame_time, 1e-6)
+                    self.last_fps = 0.85 * self.last_fps + 0.15 * fps if self.last_fps else fps
+                    last_frame_time = now
+                    self._set_status(
+                        f"streaming | rpicam-vid GPU DensePose {self.last_fps:.1f} FPS | "
+                        f"{self.send_width}px q{self.jpeg_quality}"
+                    )
+
+                    sleep_for = (1.0 / self.target_fps) - (time.perf_counter() - loop_started)
+                    if sleep_for > 0:
+                        await asyncio.sleep(sleep_for)
+        except Exception as exc:
+            self._set_status(f"stream error | {exc}")
+        finally:
+            if process and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+
+    def _read_mjpeg_frame(self, process, jpeg_buffer):
+        if process.stdout is None:
+            return None
+
+        while not self.stop_event.is_set():
+            chunk = process.stdout.read(4096)
+            if not chunk:
+                return None
+            jpeg_buffer.extend(chunk)
+            start = jpeg_buffer.find(b"\xff\xd8")
+            end = jpeg_buffer.find(b"\xff\xd9", start + 2 if start >= 0 else 0)
+
+            if start < 0:
+                del jpeg_buffer[:-1]
+                continue
+            if end < 0:
+                if start > 0:
+                    del jpeg_buffer[:start]
+                continue
+
+            frame = bytes(jpeg_buffer[start : end + 2])
+            del jpeg_buffer[: end + 2]
+            return frame
+        return None
 
 
 class RuViewApp:
@@ -246,6 +373,8 @@ class RuViewApp:
         self.camera_surface = pygame.Surface((CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT))
         self.camera_surface.fill((0, 0, 0))
         self.floor_surfaces = self.load_floor_surfaces()
+        if os.environ.get("RUVIEW_AUTOSTART_STREAM", "0") == "1":
+            self.camera_stream.start()
 
     def load_floor_surfaces(self):
         surfaces = []
@@ -308,11 +437,14 @@ class RuViewApp:
         frame = self.camera_stream.consume_frame()
         if frame is None:
             return
-        self.camera_surface = pygame.image.frombuffer(
-            frame.tobytes(),
-            (frame.shape[1], frame.shape[0]),
-            "RGB",
-        ).copy()
+        try:
+            decoded = pygame.image.load(io.BytesIO(frame)).convert()
+            self.camera_surface = pygame.transform.smoothscale(
+                decoded,
+                (CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT),
+            )
+        except pygame.error as exc:
+            self.camera_stream._set_status(f"display decode error | {exc}")
 
     def render(self):
         self.buttons = []

@@ -61,6 +61,7 @@ python frontend/main.py
 If the Pi camera is exposed as a video device, `DENSEPOSE_CAMERA_SOURCE=0` or `/dev/video0` should work. The frontend sends one compressed frame, waits for the processed frame, and displays the returned DensePose-only/black output.
 
 The frontend uses Pygame instead of DearPyGui so it can run on Raspberry Pi OS. Set `RUVIEW_FULLSCREEN=1` for kiosk-style display output.
+Set `RUVIEW_AUTOSTART_STREAM=1` to start the camera -> RunPod stream as soon as the UI opens.
 
 ## 🛠 Tech Stack
 - **Mesh Nodes**: ESP32-S3
