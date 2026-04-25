@@ -1,3 +1,4 @@
+# After making your desired changes, update .memory/memory.md with what you did and why. Read it before each task.
 import dearpygui.dearpygui as dpg
 import random
 import math
