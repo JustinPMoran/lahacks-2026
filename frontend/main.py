@@ -461,11 +461,13 @@ class CameraDensePoseStream:
 class RuViewApp:
     def __init__(self):
         pygame.init()
-        fullscreen = os.environ.get("RUVIEW_FULLSCREEN", "0") == "1"
-        flags = pygame.FULLSCREEN if fullscreen else 0
+        # Default to fullscreen on the Pi panel so the OS taskbar / window chrome don't
+        # eat the bottom toolbar. Override with RUVIEW_FULLSCREEN=0 for windowed dev.
+        self.fullscreen = os.environ.get("RUVIEW_FULLSCREEN", "1") != "0"
+        flags = pygame.FULLSCREEN if self.fullscreen else 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
         pygame.display.set_caption("RUVIEW COMMAND CENTER")
-        pygame.mouse.set_visible(not fullscreen)
+        pygame.mouse.set_visible(not self.fullscreen)
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 20)
         self.small_font = pygame.font.Font(None, 17)
@@ -527,6 +529,9 @@ class RuViewApp:
     def handle_key(self, key):
         if key in (pygame.K_ESCAPE, pygame.K_q):
             return False
+        if key == pygame.K_f:
+            self._toggle_fullscreen()
+            return True
         if key == pygame.K_SPACE:
             self.camera_stream.toggle()
         elif key == pygame.K_m:
@@ -593,6 +598,12 @@ class RuViewApp:
             bucket.append({"x": rx, "y": ry, "type": "TAG", "user": True})
         else:  # events
             bucket.append({"x": rx, "y": ry, "label": f"EVT*{n}", "user": True})
+
+    def _toggle_fullscreen(self):
+        self.fullscreen = not self.fullscreen
+        flags = pygame.FULLSCREEN if self.fullscreen else 0
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+        pygame.mouse.set_visible(not self.fullscreen)
 
     def update_camera_surface(self):
         frame = self.camera_stream.consume_frame()
