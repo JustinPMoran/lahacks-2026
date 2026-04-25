@@ -1,10 +1,14 @@
-# After making your desired changes, update .memory/memory.md with what you did and why. Read it before each task.
 import pygame
 import random
 import math
 import time
 import sys
 import os
+import requests
+import io
+import threading
+
+# After making your desired changes, update .memory/memory.md with what you did and why. Read it before each task.
 
 # Ensure backend can be imported
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,14 +47,76 @@ class BackendManager:
         self.nodes = []
         self.status_msg = ""
         self.fps = 0
+        self.map_surface = None
+        self.map_loading = False
+
+    def _apply_cyberpunk_filter(self, surface):
+        """
+        Transform a satellite image to Cyberpunk palette:
+        - Dark pixels  → (15, 17, 26)   Deep Navy
+        - Mid pixels   → (0, 60, 90)    Dark Teal
+        - Bright pixels→ (0, 255, 220)  Neon Cyan
+        Uses numpy for fast per-pixel remapping.
+        """
+        try:
+            import numpy as np
+            arr = pygame.surfarray.array3d(surface)           # (W, H, 3)
+            luminance = arr.mean(axis=2, keepdims=True)       # grayscale 0-255
+
+            dark   = np.array([15,  17,  26], dtype=np.float32)
+            mid    = np.array([ 0,  60,  90], dtype=np.float32)
+            bright = np.array([ 0, 255, 220], dtype=np.float32)
+
+            t = (luminance / 255.0)                           # 0..1 brightness
+            out = np.where(
+                t < 0.45,
+                dark   + (mid    - dark)  * (t / 0.45),
+                mid    + (bright - mid)   * ((t - 0.45) / 0.55)
+            ).clip(0, 255).astype(np.uint8)
+
+            return pygame.surfarray.make_surface(out)
+        except ImportError:
+            print("[MAP] numpy not found — skipping color filter. Run: pip install numpy")
+            return surface
+
+    def fetch_live_map(self):
+        """Fetch satellite image then apply Cyberpunk post-processing"""
+        try:
+            self.map_loading = True
+            print("[MAP] Initializing satellite sync...")
+            lat, lon = 34.0651, -118.4468
+            zoom = 17
+            static_url = (
+                f"https://static-maps.yandex.ru/1.x/"
+                f"?ll={lon},{lat}&z={zoom}&l=sat&size=300,300"
+            )
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(static_url, timeout=10, headers=headers)
+
+            if response.status_code == 200:
+                print("[MAP] Sync successful!")
+                raw = pygame.image.load(io.BytesIO(response.content)).convert()
+                raw = pygame.transform.smoothscale(raw, (SIDE_WIDTH, 190))
+                self.map_surface = self._apply_cyberpunk_filter(raw)
+                print("[MAP] Cyberpunk filter applied.")
+            else:
+                print(f"[MAP] Sync failed: {response.status_code}")
+        except Exception as e:
+            print(f"[MAP] Sync error: {e}")
+        finally:
+            self.map_loading = False
 
     def update(self):
         if self.use_mock:
             self.last_pose = self.mock.get_latest_pose()
             self.nodes = self.mock.get_nodes()
-            status = self.mock.get_system_status()
-            self.status_msg = status['data']['status'].upper()
-            self.fps = status['data']['performance']['average_fps']
+            self.status = self.mock.get_system_status()
+            self.status_msg = self.status['data']['status'].upper()
+            self.fps = self.status['data']['performance']['average_fps']
+        
+        # Async map fetch if not loaded
+        if self.map_surface is None and not self.map_loading:
+            threading.Thread(target=self.fetch_live_map, daemon=True).start()
 
 backend = BackendManager()
 
@@ -126,17 +192,58 @@ class PygameGUI:
         self.screen.blit(t, (btn_scan.centerx - t.get_width()//2, btn_scan.centery - t.get_height()//2))
 
     def draw_telemetry_panel(self):
-        rect = pygame.Rect(WIDTH - SIDE_WIDTH - PAD, HEADER_HEIGHT + PAD, SIDE_WIDTH, PANEL_HEIGHT)
+        # Top-Right: LIVE MAP (Real Data)
+        m_height = (PANEL_HEIGHT // 2) - 5
+        m_rect = pygame.Rect(WIDTH - SIDE_WIDTH - PAD, HEADER_HEIGHT + PAD, SIDE_WIDTH, m_height)
+        self.draw_rounded_rect(self.screen, m_rect, (10, 12, 18))
+        
+        if backend.map_surface:
+            # Blit at 33% opacity
+            faded = backend.map_surface.copy()
+            faded.set_alpha(int(255 * 0.33))   # 84
+            self.screen.blit(faded, m_rect)
+            # Add Cyan Overlay / Scanline for Cyberpunk feel
+            s = pygame.Surface(m_rect.size, pygame.SRCALPHA)
+            s.fill((0, 255, 255, 20))
+            self.screen.blit(s, m_rect)
+        else:
+            # Loading or Placeholder
+            msg = "SYNCING MAP..." if backend.map_loading else "MAP OFFLINE"
+            m_txt = self.font_small.render(msg, True, (60, 70, 80))
+            self.screen.blit(m_txt, (m_rect.centerx - m_txt.get_width()//2, m_rect.centery - m_txt.get_height()//2))
+
+        # Buildings Overlay (Now as a high-fidelity scan overlay)
+        # We'll keep these as "detected structures" on top of the real map
+        pts_ucla = [(40, 50), (100, 50), (100, 100), (40, 100)]
+        shifted = [(m_rect.x + p[0], m_rect.y + p[1]) for p in pts_ucla]
+        pygame.draw.polygon(self.screen, (0, 255, 255, 40), shifted, 1)
+
+        # Draw "Route" (Cyan Pulse)
+        t = time.time()
+        route_pulse = int(120 + 100 * math.sin(t * 3))
+        route_pts = [(m_rect.x + 110, m_rect.y + 175), (m_rect.x + 110, m_rect.y + 90), (m_rect.x + 80, m_rect.y + 90)]
+        pygame.draw.lines(self.screen, (0, 255, 255, route_pulse), False, route_pts, 3)
+        
+        # Location Dot
+        dot_pulse = int(5 + 2 * math.cos(t * 6))
+        pygame.draw.circle(self.screen, COLOR_RED, (m_rect.x + 80, m_rect.y + 90), dot_pulse)
+        
+        title_map = self.font_small.render("LIVE SATELLITE FEED", True, COLOR_CYAN)
+        self.screen.blit(title_map, (m_rect.x + 5, m_rect.y + 5))
+
+        # Bottom-Right: TELEMETRY
+        t_height = (PANEL_HEIGHT // 2) - 5
+        t_y = (HEADER_HEIGHT + PAD + PANEL_HEIGHT) - t_height
+        rect = pygame.Rect(WIDTH - SIDE_WIDTH - PAD, t_y, SIDE_WIDTH, t_height)
+        
         self.draw_rounded_rect(self.screen, rect, COLOR_CHILD_BG)
         title = self.font_bold.render("TELEMETRY", True, COLOR_AMBER)
         self.screen.blit(title, (rect.x + 10, rect.y + 10))
         
-        # Mock Logs
+        # Mock Logs (Reduced count to fit)
         logs = [
             "[SYNC] Mesh Active",
             "[POSE] Tracking Alpha",
-            "[SYS] GPU Load Stable",
-            "[NET] Low Latency"
         ]
         y_off = 40
         for log in logs:
@@ -145,10 +252,10 @@ class PygameGUI:
             y_off += 20
 
         # Gain Slider
-        sl_rect = pygame.Rect(rect.x + 10, rect.bottom - 60, rect.width - 20, 6)
+        sl_rect = pygame.Rect(rect.x + 10, rect.bottom - 25, rect.width - 20, 4)
         pygame.draw.rect(self.screen, (32, 36, 52), sl_rect)
-        pygame.draw.circle(self.screen, COLOR_CYAN, (sl_rect.x + int(sl_rect.width * self.gain_val), sl_rect.centery), 8)
-        self.screen.blit(self.font_small.render("GAIN CONTROL", True, COLOR_TEXT_DIM), (rect.x + 10, rect.bottom - 80))
+        pygame.draw.circle(self.screen, COLOR_CYAN, (sl_rect.x + int(sl_rect.width * self.gain_val), sl_rect.centery), 6)
+        self.screen.blit(self.font_small.render("GAIN", True, COLOR_TEXT_DIM), (rect.x + 10, rect.bottom - 45))
 
     def draw_dense_pose(self, center_x, center_y):
         parts = [
