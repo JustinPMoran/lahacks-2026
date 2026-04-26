@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 
 import pygame
@@ -175,71 +175,89 @@ class Button:
 
 
 class MotionDataPoller:
-    """Background tail of csi_demo.motion_log. Caches the last
-    `history_seconds` of (ts_epoch, score, level) per sender_id so the render
-    loop can read it without blocking on Mongo. Reconnects on transient errors.
-    """
+    """Tail a local JSONL motion log written by backend/motion_plot.py.
+    Caches the last `history_seconds` of (ts_epoch, score, level) per
+    sender_id so the render loop reads from memory. No network."""
 
-    def __init__(self, history_seconds: float = 30.0, poll_interval: float = 0.25):
+    DEFAULT_LOG_PATH = os.environ.get("RUVIEW_MOTION_LOG", "/tmp/ruview_motion.jsonl")
+
+    def __init__(self, history_seconds: float = 30.0, poll_interval: float = 0.25,
+                 log_path: str | None = None):
         self.history_seconds = history_seconds
         self.poll_interval = poll_interval
+        self.log_path = log_path or self.DEFAULT_LOG_PATH
         self._data: dict[int, list[tuple[float, float, int]]] = {}
         self._lock = threading.Lock()
         self._stopped = threading.Event()
-        self._coll = None
-        self.status = "starting"
+        self._offset = 0
+        self._partial = ""
+        self.status = f"waiting on {self.log_path}"
         threading.Thread(target=self._run, daemon=True).start()
 
-    def _connect(self):
+    def _ingest_line(self, line: str, buckets: dict[int, list[tuple[float, float, int]]]):
+        line = line.strip()
+        if not line:
+            return
         try:
-            import certifi
-            from pymongo import MongoClient
-        except ImportError:
-            self.status = "pymongo/certifi not installed"
-            return None
-        uri = os.environ.get("MONGODB_URI")
-        if not uri or "USER:PASSWORD" in uri or "<" in uri:
-            self.status = "MONGODB_URI not set"
-            return None
-        try:
-            client = MongoClient(uri, appname="ruview-frontend",
-                                 tls=True, tlsCAFile=certifi.where(),
-                                 serverSelectionTimeoutMS=5000)
-            client.admin.command("ping")
-        except Exception as e:
-            self.status = f"connect failed ({str(e).splitlines()[0][:60]})"
-            return None
-        db = client[os.environ.get("MONGODB_DB", "csi_demo")]
-        coll = db[os.environ.get("MONGODB_COLLECTION", "motion_log")]
-        self.status = f"live: {db.name}.{coll.name}"
-        return coll
+            doc = json.loads(line)
+            sid = int(doc["sender_id"])
+            ts = float(doc["ts"])
+            score = float(doc.get("score", 0.0))
+            level = int(doc.get("level", 0))
+        except (ValueError, KeyError, TypeError):
+            return
+        buckets.setdefault(sid, []).append((ts, score, level))
 
     def _run(self):
         while not self._stopped.is_set():
-            if self._coll is None:
-                self._coll = self._connect()
-                if self._coll is None:
-                    time.sleep(2.0)
-                    continue
             try:
-                cutoff = datetime.now(tz=timezone.utc) - timedelta(seconds=self.history_seconds)
-                cur = self._coll.find(
-                    {"ts": {"$gte": cutoff}},
-                    {"ts": 1, "sender_id": 1, "score": 1, "level": 1, "_id": 0},
-                ).sort("ts", 1)
-                buckets: dict[int, list[tuple[float, float, int]]] = {}
-                for doc in cur:
-                    sid = int(doc.get("sender_id", -1))
-                    if sid < 0:
-                        continue
-                    buckets.setdefault(sid, []).append(
-                        (doc["ts"].timestamp(), float(doc.get("score", 0.0)), int(doc.get("level", 0)))
-                    )
+                stat = os.stat(self.log_path)
+            except FileNotFoundError:
+                self.status = f"waiting on {self.log_path}"
                 with self._lock:
-                    self._data = buckets
-            except Exception as e:
-                self.status = f"query failed ({str(e).splitlines()[0][:60]})"
-                self._coll = None
+                    self._data = {}
+                self._offset = 0
+                self._partial = ""
+                time.sleep(self.poll_interval)
+                continue
+            except OSError as e:
+                self.status = f"stat failed ({e})"
+                time.sleep(self.poll_interval)
+                continue
+
+            # File was truncated/rotated → start over.
+            if stat.st_size < self._offset:
+                self._offset = 0
+                self._partial = ""
+                with self._lock:
+                    self._data = {}
+
+            try:
+                with open(self.log_path, "r") as fh:
+                    fh.seek(self._offset)
+                    chunk = fh.read()
+                    self._offset = fh.tell()
+            except OSError as e:
+                self.status = f"read failed ({e})"
+                time.sleep(self.poll_interval)
+                continue
+
+            if chunk:
+                with self._lock:
+                    text = self._partial + chunk
+                    lines = text.split("\n")
+                    self._partial = lines.pop()  # incomplete trailing line
+                    for line in lines:
+                        self._ingest_line(line, self._data)
+
+                    cutoff = time.time() - self.history_seconds
+                    for sid, hist in list(self._data.items()):
+                        trimmed = [pt for pt in hist if pt[0] >= cutoff]
+                        if trimmed:
+                            self._data[sid] = trimmed
+                        else:
+                            del self._data[sid]
+                self.status = f"live: {self.log_path}"
             time.sleep(self.poll_interval)
 
     def snapshot(self) -> dict[int, list[tuple[float, float, int]]]:
@@ -808,7 +826,7 @@ class RuViewApp:
 
     def draw_motion_view(self):
         """Full-screen motion telemetry: per-sender live cards + score-over-time
-        line chart + score waterfall. Pulls from MotionDataPoller (Mongo)."""
+        line chart + score waterfall. Pulls from MotionDataPoller (local JSONL tail)."""
         # Header
         self.draw_text(self.screen, "MOTION TELEMETRY", (12, 14), CYAN, self.large_font)
         self.draw_text(self.screen, f"| {self.motion_poller.status}",
@@ -819,7 +837,7 @@ class RuViewApp:
         snap = self.motion_poller.snapshot()
         if not snap:
             self.draw_text(self.screen,
-                           "Awaiting MOTION data from Mongo. Is backend/motion_plot.py running?",
+                           "Awaiting MOTION data. Is backend/motion_plot.py running?",
                            (12, 80), MUTED)
             return
 
