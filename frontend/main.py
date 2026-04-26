@@ -831,7 +831,7 @@ class RuViewApp:
         self.draw_text(self.screen, "MOTION TELEMETRY", (12, 14), CYAN, self.large_font)
         self.draw_text(self.screen, f"| {self.motion_poller.status}",
                        (240, 18), TEXT_DIM, self.small_font)
-        self.draw_button(pygame.Rect(WIDTH - 100, 12, 90, 30), "BACK", "close_motion_view")
+        self.draw_button(pygame.Rect(WIDTH - 120, 12, 90, 30), "BACK", "close_motion_view")
         pygame.draw.line(self.screen, PANEL_BORDER, (10, 52), (WIDTH - 10, 52), 1)
 
         snap = self.motion_poller.snapshot()
