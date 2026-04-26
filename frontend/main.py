@@ -11,6 +11,8 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pygame
 import requests
@@ -170,6 +172,79 @@ class Button:
     label: str
     action: str
     value: object | None = None
+
+
+class MotionDataPoller:
+    """Background tail of csi_demo.motion_log. Caches the last
+    `history_seconds` of (ts_epoch, score, level) per sender_id so the render
+    loop can read it without blocking on Mongo. Reconnects on transient errors.
+    """
+
+    def __init__(self, history_seconds: float = 30.0, poll_interval: float = 0.25):
+        self.history_seconds = history_seconds
+        self.poll_interval = poll_interval
+        self._data: dict[int, list[tuple[float, float, int]]] = {}
+        self._lock = threading.Lock()
+        self._stopped = threading.Event()
+        self._coll = None
+        self.status = "starting"
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _connect(self):
+        try:
+            import certifi
+            from pymongo import MongoClient
+        except ImportError:
+            self.status = "pymongo/certifi not installed"
+            return None
+        uri = os.environ.get("MONGODB_URI")
+        if not uri or "USER:PASSWORD" in uri or "<" in uri:
+            self.status = "MONGODB_URI not set"
+            return None
+        try:
+            client = MongoClient(uri, appname="ruview-frontend",
+                                 tls=True, tlsCAFile=certifi.where(),
+                                 serverSelectionTimeoutMS=5000)
+            client.admin.command("ping")
+        except Exception as e:
+            self.status = f"connect failed ({str(e).splitlines()[0][:60]})"
+            return None
+        db = client[os.environ.get("MONGODB_DB", "csi_demo")]
+        coll = db[os.environ.get("MONGODB_COLLECTION", "motion_log")]
+        self.status = f"live: {db.name}.{coll.name}"
+        return coll
+
+    def _run(self):
+        while not self._stopped.is_set():
+            if self._coll is None:
+                self._coll = self._connect()
+                if self._coll is None:
+                    time.sleep(2.0)
+                    continue
+            try:
+                cutoff = datetime.now(tz=timezone.utc) - timedelta(seconds=self.history_seconds)
+                cur = self._coll.find(
+                    {"ts": {"$gte": cutoff}},
+                    {"ts": 1, "sender_id": 1, "score": 1, "level": 1, "_id": 0},
+                ).sort("ts", 1)
+                buckets: dict[int, list[tuple[float, float, int]]] = {}
+                for doc in cur:
+                    sid = int(doc.get("sender_id", -1))
+                    if sid < 0:
+                        continue
+                    buckets.setdefault(sid, []).append(
+                        (doc["ts"].timestamp(), float(doc.get("score", 0.0)), int(doc.get("level", 0)))
+                    )
+                with self._lock:
+                    self._data = buckets
+            except Exception as e:
+                self.status = f"query failed ({str(e).splitlines()[0][:60]})"
+                self._coll = None
+            time.sleep(self.poll_interval)
+
+    def snapshot(self) -> dict[int, list[tuple[float, float, int]]]:
+        with self._lock:
+            return {k: list(v) for k, v in self._data.items()}
 
 
 class BackendManager:
@@ -570,6 +645,8 @@ class RuViewApp:
         }
         self.tag_mode: str | None = None    # None | "trapped" | "hazards" | "events" | "patients"
         self.patient_alert = TwilioPatientAlert()
+        self.motion_poller = MotionDataPoller()
+        self.show_motion_view = False
         if os.environ.get("RUVIEW_AUTOSTART_STREAM", "0") == "1":
             self.camera_stream.start()
 
@@ -646,6 +723,10 @@ class RuViewApp:
                     self.selected_target = None
                 elif button.action == "set_tag_mode":
                     self.tag_mode = None if self.tag_mode == button.value else button.value
+                elif button.action == "open_motion_view":
+                    self.show_motion_view = True
+                elif button.action == "close_motion_view":
+                    self.show_motion_view = False
                 elif button.action == "clear_tags":
                     had_patients = bool(self.user_tags[self.active_floor_index].get("patients"))
                     self.user_tags[self.active_floor_index] = {"trapped": [], "hazards": [], "events": [], "patients": []}
@@ -712,6 +793,9 @@ class RuViewApp:
     def render(self):
         self.buttons = []
         self.screen.fill(BG)
+        if self.show_motion_view:
+            self.draw_motion_view()
+            return
         if self.expanded_minimap:
             self.draw_expanded_minimap()
             return
@@ -721,6 +805,145 @@ class RuViewApp:
         self.draw_stream_panel(pygame.Rect(200, 70, 400, 390))
         self.draw_minimap_panel(pygame.Rect(615, 70, 175, 160))
         self.draw_telemetry_panel(pygame.Rect(615, 240, 175, 220))
+
+    def draw_motion_view(self):
+        """Full-screen motion telemetry: per-sender live cards + score-over-time
+        line chart + score waterfall. Pulls from MotionDataPoller (Mongo)."""
+        # Header
+        self.draw_text(self.screen, "MOTION TELEMETRY", (12, 14), CYAN, self.large_font)
+        self.draw_text(self.screen, f"| {self.motion_poller.status}",
+                       (240, 18), TEXT_DIM, self.small_font)
+        self.draw_button(pygame.Rect(WIDTH - 100, 12, 90, 30), "BACK", "close_motion_view")
+        pygame.draw.line(self.screen, PANEL_BORDER, (10, 52), (WIDTH - 10, 52), 1)
+
+        snap = self.motion_poller.snapshot()
+        if not snap:
+            self.draw_text(self.screen,
+                           "Awaiting MOTION data from Mongo. Is backend/motion_plot.py running?",
+                           (12, 80), MUTED)
+            return
+
+        sender_ids = sorted(snap.keys())
+        now = time.time()
+        SENDER_PALETTE = [(0, 200, 255), (255, 150, 60), (120, 230, 120),
+                          (240, 100, 200), (200, 200, 80)]
+
+        # ----- Per-sender live cards -----
+        cards_rect = pygame.Rect(10, 62, WIDTH - 20, 110)
+        n = max(1, len(sender_ids))
+        card_w = (cards_rect.width - (n - 1) * 8) // n
+        for i, sid in enumerate(sender_ids):
+            history = snap.get(sid, [])
+            if not history:
+                continue
+            last_t, last_s, last_lvl = history[-1]
+            stale = (now - last_t) > 3.0
+            level_color = GREEN if last_lvl == 0 else AMBER if last_lvl == 1 else RED
+            border_color = MUTED if stale else level_color
+            label = "QUIET" if last_lvl == 0 else "MOTION" if last_lvl == 1 else "BUSY"
+            if stale:
+                label += " (stale)"
+
+            r = pygame.Rect(cards_rect.x + i * (card_w + 8), cards_rect.y, card_w, cards_rect.height)
+            pygame.draw.rect(self.screen, PANEL_BG, r, border_radius=6)
+            pygame.draw.rect(self.screen, border_color, r, 2, border_radius=6)
+            self.draw_text(self.screen, f"SENDER 0x{sid:02x}", (r.x + 10, r.y + 8), level_color)
+            self.draw_text(self.screen, f"{last_s:.2f}", (r.x + 10, r.y + 28), TEXT, self.large_font)
+            self.draw_text(self.screen, label, (r.x + 10, r.y + 62), level_color, self.small_font)
+            self.draw_text(self.screen, f"{len(history)} pts / {self.motion_poller.history_seconds:.0f}s",
+                           (r.x + 10, r.y + 82), TEXT_DIM, self.small_font)
+
+            # Sparkline
+            if len(history) >= 2:
+                sp = pygame.Rect(r.x + 110, r.y + 28, r.width - 120, r.height - 38)
+                ymax = max(s for _, s, _ in history) * 1.15 + 0.1
+                pts = [
+                    (sp.x + sp.width * (j / max(1, len(history) - 1)),
+                     sp.bottom - sp.height * min(1.0, s / ymax))
+                    for j, (_, s, _) in enumerate(history)
+                ]
+                pygame.draw.line(self.screen, PANEL_BORDER, (sp.x, sp.bottom), (sp.right, sp.bottom), 1)
+                if len(pts) >= 2:
+                    pygame.draw.lines(self.screen, level_color, False, pts, 2)
+
+        # ----- Combined score-over-time line chart -----
+        chart_rect = pygame.Rect(10, 180, WIDTH - 20, 140)
+        self.draw_panel(chart_rect, "MOTION SCORE OVER TIME (last 30s)", CYAN)
+        plot = pygame.Rect(chart_rect.x + 36, chart_rect.y + 32,
+                           chart_rect.width - 50, chart_rect.height - 46)
+        pygame.draw.rect(self.screen, (0, 0, 0), plot)
+        pygame.draw.rect(self.screen, PANEL_BORDER, plot, 1)
+
+        all_scores = [s for hist in snap.values() for _, s, _ in hist]
+        ymax = max(all_scores) * 1.15 + 0.1 if all_scores else 5.0
+        tmin = now - self.motion_poller.history_seconds
+        tspan = max(0.001, self.motion_poller.history_seconds)
+
+        # Threshold guides at score=1.5 and 4.0
+        for thresh, color in [(1.5, AMBER), (4.0, RED)]:
+            if thresh < ymax:
+                y = plot.bottom - plot.height * (thresh / ymax)
+                pygame.draw.line(self.screen, (color[0] // 3, color[1] // 3, color[2] // 3),
+                                 (plot.x, y), (plot.right, y), 1)
+
+        # Y-axis labels
+        for frac, lbl in [(0.0, "0"), (0.5, f"{ymax / 2:.1f}"), (1.0, f"{ymax:.1f}")]:
+            y = plot.bottom - plot.height * frac
+            self.draw_text(self.screen, lbl, (chart_rect.x + 6, int(y) - 6), TEXT_DIM, self.small_font)
+
+        for i, sid in enumerate(sender_ids):
+            history = snap[sid]
+            if len(history) < 2:
+                continue
+            color = SENDER_PALETTE[i % len(SENDER_PALETTE)]
+            pts = []
+            for (t, s, _) in history:
+                x = plot.x + plot.width * max(0.0, min(1.0, (t - tmin) / tspan))
+                y = plot.bottom - plot.height * min(1.0, s / ymax)
+                pts.append((x, y))
+            if len(pts) >= 2:
+                pygame.draw.lines(self.screen, color, False, pts, 2)
+            # legend swatch
+            lx = chart_rect.right - 110 + (i % 3) * 36
+            ly = chart_rect.y + 12 + (i // 3) * 14
+            pygame.draw.rect(self.screen, color, pygame.Rect(lx, ly, 10, 10))
+            self.draw_text(self.screen, f"0x{sid:02x}", (lx + 14, ly - 2), TEXT, self.small_font)
+
+        # ----- Score waterfall (one row per sender, color = score intensity) -----
+        wf_rect = pygame.Rect(10, 328, WIDTH - 20, HEIGHT - 338)
+        self.draw_panel(wf_rect, "SCORE WATERFALL — newest at right", AMBER)
+        wf = pygame.Rect(wf_rect.x + 36, wf_rect.y + 32,
+                         wf_rect.width - 50, wf_rect.height - 42)
+        pygame.draw.rect(self.screen, (0, 0, 0), wf)
+        pygame.draw.rect(self.screen, PANEL_BORDER, wf, 1)
+
+        if sender_ids:
+            row_h = wf.height / len(sender_ids)
+            for ri, sid in enumerate(sender_ids):
+                history = snap.get(sid, [])
+                row_top = int(wf.y + ri * row_h)
+                row_bot = int(wf.y + (ri + 1) * row_h)
+                self.draw_text(self.screen, f"0x{sid:02x}",
+                               (wf_rect.x + 4, row_top + 4), TEXT, self.small_font)
+                # rasterize score → color into pixel columns
+                for (t, s, _) in history:
+                    col = int((t - tmin) / tspan * wf.width)
+                    if not (0 <= col < wf.width):
+                        continue
+                    intensity = max(0.0, min(1.0, s / 6.0))
+                    # green → amber → red
+                    if intensity < 0.5:
+                        k = intensity * 2
+                        rgb = (int(255 * k), int(220), int(80 * (1 - k)))
+                    else:
+                        k = (intensity - 0.5) * 2
+                        rgb = (255, int(220 * (1 - k * 0.7)), int(80 * (1 - k)))
+                    pygame.draw.line(self.screen, rgb,
+                                     (wf.x + col, row_top + 1),
+                                     (wf.x + col, row_bot - 1), 1)
+                if ri < len(sender_ids) - 1:
+                    pygame.draw.line(self.screen, PANEL_BORDER,
+                                     (wf.x, row_bot), (wf.right, row_bot), 1)
 
     def draw_header(self):
         self.draw_text(self.screen, "ANGELWARE", (12, 14), CYAN, self.large_font)
@@ -772,6 +995,7 @@ class RuViewApp:
         label = "STOP STREAM" if self.camera_stream.is_running() else "START STREAM"
         self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 40, 150, 30), label, "toggle_stream")
         self.draw_button(pygame.Rect(rect.x + 170, rect.bottom - 40, 80, 30), "STOP", "stop_stream")
+        self.draw_button(pygame.Rect(rect.x + 260, rect.bottom - 40, 90, 30), "MOTION", "open_motion_view")
         self.draw_text(self.screen, "SPACE start/stop | 1-4 floors | M map | Q quit", (rect.x + 10, rect.bottom - 102), TEXT_DIM, self.small_font)
 
     # ----- Tactical overlay helpers ---------------------------------------
