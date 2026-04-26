@@ -545,7 +545,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sample-rate-hz", type=int, default=env_int("SAMPLE_RATE_HZ", 100))
     p.add_argument("--sample-window-ms", type=int, default=env_int("SAMPLE_WINDOW_MS", DEFAULT_SAMPLE_WINDOW_MS))
 
-    p.add_argument("--gemini-model", default=os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"))
+    p.add_argument("--gemini-model", default=os.environ.get("GEMINI_MODEL", "gemma-4-26b-a4b-it"))
     p.add_argument("--no-gemini", action="store_true", default=env_bool("DISABLE_GEMINI", False),
                    help="write deterministic samples without Google Gemini enrichment")
     return p

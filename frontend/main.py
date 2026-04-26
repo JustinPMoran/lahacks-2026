@@ -36,8 +36,8 @@ HEIGHT = 480
 FPS = 30
 
 ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "floors")
-CAMERA_STREAM_WIDTH = 380
-CAMERA_STREAM_HEIGHT = 214
+CAMERA_STREAM_WIDTH = 410
+CAMERA_STREAM_HEIGHT = 320
 DEFAULT_DENSEPOSE_WS_URL = os.environ.get("DENSEPOSE_WS_URL", "ws://103.196.86.92:33644")
 DEFAULT_STREAM_SEND_WIDTH = int(os.environ.get("DENSEPOSE_SEND_WIDTH", "512"))
 DEFAULT_STREAM_JPEG_QUALITY = int(os.environ.get("DENSEPOSE_JPEG_QUALITY", "60"))
@@ -70,7 +70,6 @@ COLOR_SELF     = (255, 230, 0)
 COLOR_TEAMMATE = (0, 200, 255)
 COLOR_TRAPPED  = (255, 40, 60)
 COLOR_HAZARD   = (255, 120, 0)
-COLOR_EVENT    = (200, 110, 255)
 COLOR_NODE     = (0, 255, 200)
 COLOR_LINK     = (0, 110, 95)        # faint mesh-link line
 COLOR_EXIT     = (60, 255, 120)
@@ -81,9 +80,9 @@ HIT_RADIUS_NORM = 0.045              # click hit-test radius, normalized
 
 FLOOR_ENTITIES = {
     # Level 1: clean slate — just the team + you. The user demos by tagging
-    # hazards / trapped / events on the map.
+    # hazards / trapped / patients on the map.
     "level_1_stadium_floor.png": {
-        "self": {"x": 0.46, "y": 0.55, "label": "YOU"},
+        "self": {"x": 0.50, "y": 0.50, "label": "YOU"},
         "teammates": [
             {"x": 0.30, "y": 0.50, "label": "BRAVO-2", "hr": 102},
             {"x": 0.62, "y": 0.62, "label": "BRAVO-3", "hr": 96},
@@ -91,8 +90,8 @@ FLOOR_ENTITIES = {
         "trapped": [],
         "hazards": [],
         "nodes": [
-            {"x": 0.20, "y": 0.30},
-            {"x": 0.80, "y": 0.70},
+            {"x": 0.44, "y": 0.47},
+            {"x": 0.56, "y": 0.53},
         ],
         "links": [(0, 1)],
         "exits": [
@@ -101,68 +100,31 @@ FLOOR_ENTITIES = {
         ],
     },
     "level_2_lower_bowl.png": {
-        "self": {"x": 0.50, "y": 0.50, "label": "YOU"},
-        "teammates": [
-            {"x": 0.22, "y": 0.30, "label": "BRAVO-2", "hr": 110},
-            {"x": 0.78, "y": 0.70, "label": "BRAVO-3", "hr": 92},
-        ],
-        "trapped": [
-            {"x": 0.16, "y": 0.78, "label": "VIC-1", "status": "PRONE"},
-            {"x": 0.86, "y": 0.30, "label": "VIC-2", "status": "MOVING"},
-        ],
-        "hazards": [
-            {"x": 0.10, "y": 0.50, "type": "FIRE"},
-        ],
-        "nodes": [
-            {"x": 0.15, "y": 0.20},
-            {"x": 0.85, "y": 0.20},
-            {"x": 0.50, "y": 0.85},
-        ],
-        "links": [(0, 1), (0, 2), (1, 2)],
-        "exits": [
-            {"x": 0.04, "y": 0.50, "label": "W"},
-            {"x": 0.96, "y": 0.50, "label": "E"},
-            {"x": 0.50, "y": 0.04, "label": "N"},
-        ],
+        "self": None,
+        "teammates": [],
+        "trapped": [],
+        "hazards": [],
+        "nodes": [],
+        "links": [],
+        "exits": [],
     },
     "level_3_upper_bowl.png": {
-        "self": {"x": 0.32, "y": 0.55, "label": "YOU"},
-        "teammates": [
-            {"x": 0.70, "y": 0.40, "label": "BRAVO-2", "hr": 88},
-        ],
-        "trapped": [
-            {"x": 0.22, "y": 0.82, "label": "VIC-3", "status": "PRONE"},
-        ],
+        "self": None,
+        "teammates": [],
+        "trapped": [],
         "hazards": [],
-        "nodes": [
-            {"x": 0.20, "y": 0.30},
-            {"x": 0.80, "y": 0.70},
-        ],
-        "links": [(0, 1)],
-        "exits": [
-            {"x": 0.50, "y": 0.04, "label": "N"},
-            {"x": 0.50, "y": 0.96, "label": "S"},
-        ],
+        "nodes": [],
+        "links": [],
+        "exits": [],
     },
     "level_4_concourse_exterior.png": {
-        "self": {"x": 0.52, "y": 0.85, "label": "YOU"},
-        "teammates": [
-            {"x": 0.20, "y": 0.50, "label": "BRAVO-2", "hr": 84},
-        ],
-        "trapped": [
-            {"x": 0.30, "y": 0.30, "label": "VIC-4", "status": "STILL"},
-        ],
+        "self": None,
+        "teammates": [],
+        "trapped": [],
         "hazards": [],
-        "nodes": [
-            {"x": 0.20, "y": 0.50},
-            {"x": 0.80, "y": 0.50},
-        ],
-        "links": [(0, 1)],
-        "exits": [
-            {"x": 0.50, "y": 0.96, "label": "MAIN"},
-            {"x": 0.05, "y": 0.05, "label": "NW"},
-            {"x": 0.95, "y": 0.05, "label": "NE"},
-        ],
+        "nodes": [],
+        "links": [],
+        "exits": [],
     },
 }
 
@@ -295,11 +257,10 @@ class BackendManager:
                 self.nodes = self._nodes_from_proximity()
 
     def get_logs(self):
-        average_fps = self.status["data"]["performance"]["average_fps"]
         online_nodes = len([node for node in self.nodes if node["status"] == "ONLINE"])
         near_nodes = len([node for node in self.proximity_nodes if node["proximity_zone"] == "near"])
         return [
-            f"[SYNC] {time.strftime('%H:%M:%S')} - Model: {average_fps} FPS",
+            f"[SYNC] {time.strftime('%H:%M:%S')} - Model active",
             f"[NODE] Online Count: {online_nodes}",
             f"[PROX] C6 near S3: {near_nodes}/{len(self.proximity_nodes)}",
             "[CSI] Multi-path interference low",
@@ -540,8 +501,7 @@ class CameraDensePoseStream:
                     self.last_fps = 0.85 * self.last_fps + 0.15 * fps if self.last_fps else fps
                     last_frame_time = now
                     self._set_status(
-                        f"streaming | GPU DensePose {self.last_fps:.1f} FPS | "
-                        f"{self.send_width}px q{self.jpeg_quality}"
+                        f"streaming | GPU DensePose | {self.send_width}px q{self.jpeg_quality}"
                     )
 
                     sleep_for = (1.0 / self.target_fps) - (time.perf_counter() - loop_started)
@@ -616,8 +576,7 @@ class CameraDensePoseStream:
                     self.last_fps = 0.85 * self.last_fps + 0.15 * fps if self.last_fps else fps
                     last_frame_time = now
                     self._set_status(
-                        f"streaming | RF sensor GPU DensePose {self.last_fps:.1f} FPS | "
-                        f"{self.send_width}px q{self.jpeg_quality}"
+                        f"streaming | RF sensor GPU DensePose | {self.send_width}px q{self.jpeg_quality}"
                     )
 
                     sleep_for = (1.0 / self.target_fps) - (time.perf_counter() - loop_started)
@@ -688,9 +647,9 @@ class RuViewApp:
         self.preview_map_rect: pygame.Rect | None = None
         # User-tagged markers (per-floor). Each bucket is appended to the static seed at render time.
         self.user_tags = {
-            i: {"trapped": [], "hazards": [], "events": [], "patients": []} for i in range(len(FLOOR_MAPS))
+            i: {"trapped": [], "hazards": [], "patients": []} for i in range(len(FLOOR_MAPS))
         }
-        self.tag_mode: str | None = None    # None | "trapped" | "hazards" | "events" | "patients"
+        self.tag_mode: str | None = None    # None | "trapped" | "hazards" | "patients"
         self.patient_alert = TwilioPatientAlert()
         self.motion_poller = MotionDataPoller()
         self.show_motion_view = False
@@ -776,7 +735,7 @@ class RuViewApp:
                     self.show_motion_view = False
                 elif button.action == "clear_tags":
                     had_patients = bool(self.user_tags[self.active_floor_index].get("patients"))
-                    self.user_tags[self.active_floor_index] = {"trapped": [], "hazards": [], "events": [], "patients": []}
+                    self.user_tags[self.active_floor_index] = {"trapped": [], "hazards": [], "patients": []}
                     if had_patients:
                         self._notify_patients_tag_changed()
                     self.selected_target = None
@@ -810,8 +769,6 @@ class RuViewApp:
         elif self.tag_mode == "patients":
             bucket.append({"x": rx, "y": ry, "label": f"PAT*{n}", "status": "PATIENT", "user": True})
             self._notify_patients_tag_changed()
-        else:  # events
-            bucket.append({"x": rx, "y": ry, "label": f"EVT*{n}", "user": True})
 
     def _notify_patients_tag_changed(self):
         floor_label = FLOOR_MAPS[self.active_floor_index]["label"]
@@ -849,7 +806,7 @@ class RuViewApp:
 
         self.draw_header()
         self.draw_node_panel(pygame.Rect(10, 70, 175, 390))
-        self.draw_stream_panel(pygame.Rect(200, 70, 400, 390))
+        self.draw_stream_panel(pygame.Rect(188, 70, 422, 390))
         self.draw_minimap_panel(pygame.Rect(615, 70, 175, 160))
         self.draw_telemetry_panel(pygame.Rect(615, 240, 175, 220))
 
@@ -997,7 +954,7 @@ class RuViewApp:
         status = self.backend.status["data"]
         self.draw_text(
             self.screen,
-            f"| COMMAND CENTER v1.0 | {status['status'].upper()} | {status['performance']['average_fps']} FPS",
+            f"| COMMAND CENTER v1.0 | {status['status'].upper()}",
             (190, 18),
             TEXT_DIM,
         )
@@ -1006,7 +963,8 @@ class RuViewApp:
     def draw_panel(self, rect, title, color):
         pygame.draw.rect(self.screen, PANEL_BG, rect, border_radius=6)
         pygame.draw.rect(self.screen, PANEL_BORDER, rect, 1, border_radius=6)
-        self.draw_text(self.screen, title, (rect.x + 10, rect.y + 10), color)
+        if title:
+            self.draw_text(self.screen, title, (rect.x + 10, rect.y + 10), color)
 
     def draw_node_panel(self, rect):
         self.draw_panel(rect, "NODES", GREEN)
@@ -1034,27 +992,18 @@ class RuViewApp:
         self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 40, rect.width - 20, 28), "SYSTEM REBOOT", "noop")
 
     def draw_stream_panel(self, rect):
-        self.draw_panel(rect, "ANGELWARE", CYAN)
-        image_rect = pygame.Rect(rect.x + 10, rect.y + 40, CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT)
+        self.draw_panel(rect, "", CYAN)
+        image_rect = pygame.Rect(rect.x + 10, rect.y + 10, CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT)
         pygame.draw.rect(self.screen, (0, 0, 0), image_rect)
         self.screen.blit(self.camera_surface, image_rect)
         pygame.draw.rect(self.screen, (0, 180, 216), image_rect, 1)
 
-        y = image_rect.bottom + 12
-        self.draw_text(self.screen, "RF Sensor -> RunPod GPU -> DensePose-only output", (rect.x + 10, y), MUTED, self.small_font)
-        self.draw_wrapped_text(self.screen, self.camera_stream.status, pygame.Rect(rect.x + 10, y + 22, 380, 42), GREEN)
-        self.draw_text(
-            self.screen,
-            f"CAM {self.camera_stream.camera_source} | {self.camera_stream.send_width}px | JPG {self.camera_stream.jpeg_quality} | {self.camera_stream.target_fps:.0f} FPS",
-            (rect.x + 10, rect.bottom - 72),
-            TEXT_DIM,
-            self.small_font,
-        )
+        status_y = image_rect.bottom + 6
+        self.draw_wrapped_text(self.screen, self.camera_stream.status, pygame.Rect(rect.x + 10, status_y, rect.width - 20, 18), GREEN)
         label = "STOP STREAM" if self.camera_stream.is_running() else "START STREAM"
-        self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 40, 150, 30), label, "toggle_stream")
-        self.draw_button(pygame.Rect(rect.x + 170, rect.bottom - 40, 80, 30), "STOP", "stop_stream")
-        self.draw_button(pygame.Rect(rect.x + 260, rect.bottom - 40, 90, 30), "MOTION", "open_motion_view")
-        self.draw_text(self.screen, "SPACE start/stop | 1-4 floors | M map | Q quit", (rect.x + 10, rect.bottom - 102), TEXT_DIM, self.small_font)
+        self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 32, 150, 26), label, "toggle_stream")
+        self.draw_button(pygame.Rect(rect.x + 170, rect.bottom - 32, 80, 26), "STOP", "stop_stream")
+        self.draw_button(pygame.Rect(rect.x + 260, rect.bottom - 32, 90, 26), "MOTION", "open_motion_view")
 
     # ----- Tactical overlay helpers ---------------------------------------
 
@@ -1070,7 +1019,6 @@ class RuViewApp:
             "trapped": list(base.get("trapped", [])) + list(tags.get("trapped", [])) + patient_tags,
             "patients": patient_tags,
             "hazards": list(base.get("hazards", [])) + list(tags.get("hazards", [])),
-            "events": list(tags.get("events", [])),
             "nodes": base.get("nodes", []),
             "links": base.get("links", []),
             "exits": base.get("exits", []),
@@ -1086,7 +1034,9 @@ class RuViewApp:
     def live_pos(self, entity, kind, idx):
         """Return the live (x, y) normalized position for an entity. Mesh nodes/exits are anchored."""
         bx, by = entity["x"], entity["y"]
-        if kind == "trapped":
+        if entity.get("user"):
+            dx, dy = 0.0, 0.0
+        elif kind == "trapped":
             dx, dy = self._wobble(idx + 11, 0.004, 0.004, 1.5)
         elif kind == "teammate":
             dx, dy = self._wobble(idx + 23, 0.022, 0.018, 0.55)
@@ -1192,6 +1142,16 @@ class RuViewApp:
         entities = self._floor_entities(floor_index)
         if not entities:
             return
+        has_markers = bool(
+            entities.get("self")
+            or entities.get("teammates")
+            or entities.get("trapped")
+            or entities.get("hazards")
+            or entities.get("nodes")
+            or entities.get("exits")
+        )
+        if not has_markers:
+            return
         full = detail == "full"
         s = 1.0 if full else 0.6
 
@@ -1276,19 +1236,6 @@ class RuViewApp:
             if full:
                 self.draw_text(self.screen, hz.get("type", "HAZ"), (x + d + 2, y - 6), COLOR_HAZARD, self.small_font)
 
-        # Events (user-tagged "other" markers — purple diamond outline with "!")
-        for i, ev in enumerate(entities.get("events", [])):
-            x, y = to_px((ev["x"], ev["y"]))
-            d = int(7 * s)
-            pygame.draw.polygon(
-                self.screen, COLOR_EVENT,
-                [(x, y - d), (x + d, y), (x, y + d), (x - d, y)],
-                2,
-            )
-            if full:
-                self.draw_text(self.screen, "!", (x - 2, y - 7), COLOR_EVENT, self.small_font)
-                self.draw_text(self.screen, ev.get("label", "EVENT"), (x + d + 3, y - 8), COLOR_EVENT, self.small_font)
-
         sel = self.selected_target if self.selected_target and self.selected_target["floor_idx"] == self.active_floor_index else None
 
         # Teammates
@@ -1333,8 +1280,7 @@ class RuViewApp:
             n_trap = len(entities.get("trapped", []))
             n_haz = len(entities.get("hazards", []))
             n_node = len(entities.get("nodes", []))
-            n_evt = len(entities.get("events", []))
-            legend_rect = pygame.Rect(map_rect.x + 8, map_rect.y + 8, 178, 126)
+            legend_rect = pygame.Rect(map_rect.x + 8, map_rect.y + 8, 178, 110)
             legend_bg = pygame.Surface(legend_rect.size, pygame.SRCALPHA)
             legend_bg.fill((8, 14, 22, 200))
             self.screen.blit(legend_bg, legend_rect.topleft)
@@ -1344,7 +1290,6 @@ class RuViewApp:
                 (COLOR_TRAPPED,  f"TRAPPED    x{n_trap}"),
                 (COLOR_TEAMMATE, f"TEAM       x{n_team}"),
                 (COLOR_HAZARD,   f"HAZARDS    x{n_haz}"),
-                (COLOR_EVENT,    f"EVENTS     x{n_evt}"),
                 (COLOR_NODE,     f"MESH NODES x{n_node}"),
                 (COLOR_RESCUE,   "TAP DOT TO LOCK"),
             ]
@@ -1455,7 +1400,8 @@ class RuViewApp:
         self.draw_floor_overlay(scaled_rect, self.active_floor_index, detail="compact")
         pygame.draw.rect(self.screen, (0, 180, 216), scaled_rect, 1)
         self.preview_map_rect = scaled_rect.copy()
-        self.draw_proximity_markers(scaled_rect)
+        if self.active_floor_index == 0:
+            self.draw_proximity_markers(scaled_rect)
         self.buttons.append(Button(scaled_rect, "map", "toggle_minimap"))
 
     def draw_telemetry_panel(self, rect):
@@ -1488,24 +1434,23 @@ class RuViewApp:
         self.draw_floor_overlay(scaled_rect, self.active_floor_index, detail="full")
         pygame.draw.rect(self.screen, PANEL_BORDER, scaled_rect, 1)
         self.expanded_map_rect = scaled_rect.copy()
-        self.draw_proximity_markers(scaled_rect, expanded=True)
+        if self.active_floor_index == 0:
+            self.draw_proximity_markers(scaled_rect, expanded=True)
 
         self.draw_target_stats_panel()
 
-        # Tag toolbar — drop hazards / trapped / events on the map
+        # Tag toolbar — drop hazards / trapped / patients on the map
         toolbar_y = HEIGHT - 36
         self.draw_button(pygame.Rect(10, toolbar_y, 92, 26), "+ HAZARD",  "set_tag_mode", "hazards", compact=True)
         self.draw_button(pygame.Rect(108, toolbar_y, 96, 26), "+ TRAPPED", "set_tag_mode", "trapped", compact=True)
-        self.draw_button(pygame.Rect(210, toolbar_y, 88, 26), "+ EVENT",   "set_tag_mode", "events",  compact=True)
-        self.draw_button(pygame.Rect(304, toolbar_y, 98, 26), "+ PATIENT", "set_tag_mode", "patients", compact=True)
-        self.draw_button(pygame.Rect(408, toolbar_y, 102, 26), "CLEAR TAGS", "clear_tags", compact=True)
+        self.draw_button(pygame.Rect(210, toolbar_y, 98, 26), "+ PATIENT", "set_tag_mode", "patients", compact=True)
+        self.draw_button(pygame.Rect(314, toolbar_y, 102, 26), "CLEAR TAGS", "clear_tags", compact=True)
 
         if self.tag_mode is not None:
-            mode_label = {"trapped": "TRAPPED", "hazards": "HAZARD", "events": "EVENT", "patients": "PATIENT"}[self.tag_mode]
+            mode_label = {"trapped": "TRAPPED", "hazards": "HAZARD", "patients": "PATIENT"}[self.tag_mode]
             mode_color = {
                 "trapped": COLOR_TRAPPED,
                 "hazards": COLOR_HAZARD,
-                "events": COLOR_EVENT,
                 "patients": GREEN,
             }[self.tag_mode]
             hint = f"{mode_label} TAG MODE | CLICK MAP TO DROP"
