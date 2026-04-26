@@ -451,7 +451,7 @@ class CameraDensePoseStream:
             "-",
         ]
 
-        self._set_status("opencv unavailable | using rpicam-vid MJPEG stream")
+        self._set_status("opencv unavailable | using RF Sensor stream")
         process = None
         try:
             async with websockets.connect(
@@ -467,14 +467,14 @@ class CameraDensePoseStream:
                     stderr=subprocess.DEVNULL,
                     bufsize=0,
                 )
-                self._set_status(f"connected via rpicam-vid | {self.ws_url}")
+                self._set_status(f"connected via RF sensor | {self.ws_url}")
                 last_frame_time = time.perf_counter()
                 jpeg_buffer = bytearray()
 
                 while not self.stop_event.is_set():
                     loop_started = time.perf_counter()
                     if process.poll() is not None:
-                        self._set_status(f"rpicam-vid exited | code {process.returncode}")
+                        self._set_status(f"RF sensor exited | code {process.returncode}")
                         break
 
                     frame = self._read_mjpeg_frame(process, jpeg_buffer)
@@ -494,7 +494,7 @@ class CameraDensePoseStream:
                     self.last_fps = 0.85 * self.last_fps + 0.15 * fps if self.last_fps else fps
                     last_frame_time = now
                     self._set_status(
-                        f"streaming | rpicam-vid GPU DensePose {self.last_fps:.1f} FPS | "
+                        f"streaming | RF sensor GPU DensePose {self.last_fps:.1f} FPS | "
                         f"{self.send_width}px q{self.jpeg_quality}"
                     )
 
@@ -545,7 +545,7 @@ class RuViewApp:
         self.fullscreen = os.environ.get("RUVIEW_FULLSCREEN", "1") != "0"
         flags = pygame.FULLSCREEN if self.fullscreen else 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
-        pygame.display.set_caption("RUVIEW COMMAND CENTER")
+        pygame.display.set_caption("ANGELWAR")
         pygame.mouse.set_visible(not self.fullscreen)
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 20)
@@ -723,7 +723,7 @@ class RuViewApp:
         self.draw_telemetry_panel(pygame.Rect(615, 240, 175, 220))
 
     def draw_header(self):
-        self.draw_text(self.screen, "RUVIEW SYSTEM", (12, 14), CYAN, self.large_font)
+        self.draw_text(self.screen, "ANGELWARE", (12, 14), CYAN, self.large_font)
         status = self.backend.status["data"]
         self.draw_text(
             self.screen,
@@ -753,14 +753,14 @@ class RuViewApp:
         self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 40, rect.width - 20, 28), "SYSTEM REBOOT", "noop")
 
     def draw_stream_panel(self, rect):
-        self.draw_panel(rect, "RPI CAMERA GPU DENSEPOSE STREAM", CYAN)
+        self.draw_panel(rect, "ANGELWARE", CYAN)
         image_rect = pygame.Rect(rect.x + 10, rect.y + 40, CAMERA_STREAM_WIDTH, CAMERA_STREAM_HEIGHT)
         pygame.draw.rect(self.screen, (0, 0, 0), image_rect)
         self.screen.blit(self.camera_surface, image_rect)
         pygame.draw.rect(self.screen, (0, 180, 216), image_rect, 1)
 
         y = image_rect.bottom + 12
-        self.draw_text(self.screen, "Pi camera -> RunPod GPU -> DensePose-only output", (rect.x + 10, y), MUTED, self.small_font)
+        self.draw_text(self.screen, "RF Sensor -> RunPod GPU -> DensePose-only output", (rect.x + 10, y), MUTED, self.small_font)
         self.draw_wrapped_text(self.screen, self.camera_stream.status, pygame.Rect(rect.x + 10, y + 22, 380, 42), GREEN)
         self.draw_text(
             self.screen,
