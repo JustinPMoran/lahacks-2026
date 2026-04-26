@@ -9,7 +9,7 @@ pyserial
 numpy
 matplotlib
 
-# MongoDB Atlas logging (backend/mongo_logger.py)
-pymongo
+# Twilio patient alert, env loading, and Atlas ingestion
 python-dotenv
+pymongo
 google-genai
