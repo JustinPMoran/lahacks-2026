@@ -1,12 +1,12 @@
-# Project Echo: AI-Enhanced Search and Rescue
+# Project AngelWare: AI-Enhanced Search and Rescue
 
-Project Echo is a hardware-software integration designed to assist firefighters in high-stakes search-and-rescue operations. By combining ESP32-based CSI (Channel State Information) sensing with AI-driven automated dispatch, Echo ensures victims are identified behind walls and reported to medical services in seconds.
+Project AngelWare is a hardware-software integration designed to assist firefighters in high-stakes search-and-rescue operations. By combining ESP32-based CSI (Channel State Information) sensing with AI-driven automated dispatch, AngelWare ensures victims are identified behind walls and reported to medical services in seconds.
 
 ## **The Problem**
 In active fire scenarios, communication is hindered by smoke, noise, and physical exhaustion. When a firefighter discovers a victim, relaying information to medical teams via radio is often slow or impossible, delaying life-saving care.
 
 ## **The Solution**
-Project Echo streamlines the transition from **detection to dispatch** through a silent, one-touch interface on a wearable display.
+Project AngelWare streamlines the transition from **detection to dispatch** through a silent, one-touch interface on a wearable display.
 
 ### **Core Features**
 * **CSI Sensing Mesh:** Utilizes ESP32-S3 nodes to detect human presence/motion behind walls via signal disruption.
