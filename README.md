@@ -1,81 +1,67 @@
-<!-- After making your desired changes, update .memory/memory.md with what you did and why. Read it before each task. -->
-# RuView | WiFi DensePose Architecture
+# Project Echo: AI-Enhanced Search and Rescue
 
-**RuView** is a real-time WiFi sensing and human pose reconstruction system. By analyzing signal disruptions across an ESP32-S3 mesh network, RuView reconstructs presence and spatial data without using cameras, privacy-preserving by design.
+Project Echo is a hardware-software integration designed to assist firefighters in high-stakes search-and-rescue operations. By combining ESP32-based CSI (Channel State Information) sensing with AI-driven automated dispatch, Echo ensures victims are identified behind walls and reported to medical services in seconds.
+
+## **The Problem**
+In active fire scenarios, communication is hindered by smoke, noise, and physical exhaustion. When a firefighter discovers a victim, relaying information to medical teams via radio is often slow or impossible, delaying life-saving care.
+
+## **The Solution**
+Project Echo streamlines the transition from **detection to dispatch** through a silent, one-touch interface on a wearable display.
+
+### **Core Features**
+* **CSI Sensing Mesh:** Utilizes ESP32-S3 nodes to detect human presence/motion behind walls via signal disruption.
+* **One-Touch Activation:** Firefighters tap the victim's location on a Freenove DSI display powered by a Raspberry Pi.
+* **Silent AI Dispatch:** * **Twilio Voice API:** Automatically initiates an emergency call to hospitals.
+    * **ElevenLabs Conversational AI:** Converts LLM-generated situational reports (SITREPs) into natural, high-clarity speech for the receiver.
+* **Edge-to-Cloud Inference:** Real-time camera capture processed via OpenCV and streamed over WebSockets to a RunPod GPU instance running **DensePose** for advanced pose estimation.
 
 ---
 
-## 🗒 Project Memory
-> [!IMPORTANT]
-> Detailed design choices, layout constraints (800x480), and implementation logic are stored in:
-> **[.memory/memory.md](file:///.memory/memory.md)**
+## **Tech Stack**
+
+### **Languages**
+* **Python:** Backend logic, AI integration, and UI.
+* **C:** ESP32-S3 mesh node firmware.
+* **PowerShell:** Deployment and environment orchestration.
+
+### **Frameworks & Libraries**
+* **UI/Frontend:** Pygame
+* **Computer Vision:** OpenCV (Capture, JPEG encode/decode), Detectron2 + DensePose
+* **Machine Learning:** PyTorch, NumPy
+* **Communication:** WebSockets (Real-time streaming), PySerial (Hardware comms), Requests, python-dotenv
+
+### **Hardware & Platforms**
+* **Edge Host:** Raspberry Pi (Frontend & Display controller)
+* **Sensing:** ESP32-S3 mesh nodes (CSI sensing)
+* **Display:** Freenove 800x480 DSI Touchscreen
+* **Cloud Inference:** RunPod GPU Instances (DensePose server)
+
+### **Cloud Services & APIs**
+* **Voice & Audio:** ElevenLabs (TTS & Conversational AI), Twilio Voice API
+* **Networking:** RunPod WebSocket proxy for live stream transport
+
+### **Storage**
+* **Logging:** Local JSONL event logging (tailed by the frontend for real-time motion event updates).
 
 ---
 
-## 🚀 Quick Start
-```bash
-cd frontend
-pip install -r requirements.txt
-python main.py
-```
+## **Getting Started**
 
-## RunPod + Raspberry Pi Camera Stream
+### **Installation**
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/JustinPMoran/lahacks-2026.git](https://github.com/JustinPMoran/lahacks-2026.git)
+    cd lahacks-2026
+    ```
 
-The intended live path is:
+2.  **Configure Environment:**
+    Create a `.env` file in the root directory:
+    ```env
+    TWILIO_ACCOUNT_SID=your_sid
+    TWILIO_AUTH_TOKEN=your_token
+    ELEVENLABS_API_KEY=your_api_key
+    RUNPOD_ENDPOINT=your_websocket_url
+    ```
 
-```text
-Raspberry Pi camera/frontend -> WebSocket JPEG frames -> RunPod GPU DensePose server -> processed JPEG frames -> frontend texture
-```
-
-On the RunPod GPU machine:
-
-```bash
-cd lahacks-2026
-python3.11 -m venv .venv-densepose
-source .venv-densepose/bin/activate
-python -m pip install -U pip setuptools wheel
-python -m pip install torch torchvision opencv-python websockets av scipy pycocotools matplotlib
-python -m pip install -e ./detectron2 --no-build-isolation
-python -m pip install -e ./detectron2/projects/DensePose --no-deps --no-build-isolation
-python backend/densepose_stream_server.py --host 0.0.0.0 --port 8765 --device cuda --mode mesh
-```
-
-Expose port `8765` from RunPod. Use the generated RunPod WebSocket proxy URL as `DENSEPOSE_WS_URL`, for example:
-
-```bash
-export DENSEPOSE_WS_URL="wss://<pod-id>-8765.proxy.runpod.net"
-```
-
-On the Raspberry Pi display/frontend:
-
-```bash
-cd lahacks-2026
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-export DENSEPOSE_CAMERA_SOURCE=0
-export DENSEPOSE_WS_URL="wss://<pod-id>-8765.proxy.runpod.net"
-python frontend/main.py
-```
-
-If the Pi camera is exposed as a video device, `DENSEPOSE_CAMERA_SOURCE=0` or `/dev/video0` should work. The frontend sends one compressed frame, waits for the processed frame, and displays the returned DensePose-only/black output.
-
-The frontend uses Pygame instead of DearPyGui so it can run on Raspberry Pi OS. Set `RUVIEW_FULLSCREEN=1` for kiosk-style display output.
-Set `RUVIEW_AUTOSTART_STREAM=1` to start the camera -> RunPod stream as soon as the UI opens.
-
-## 🛠 Tech Stack
-- **Mesh Nodes**: ESP32-S3
-- **Local Host**: Raspberry Pi 4/5
-- **Display**: Freenove 800x480 DSI
-- **GUI Framework**: Pygame (Python)
-
-## 🎨 Design Tokens
-- **Primary**: Neon Cyan `(0, 255, 255)`
-- **Accent**: Amber `(255, 200, 0)`
-- **Background**: Deep Navy `(15, 17, 26)`
-- **Resolution**: Pixel-perfect **800x480**
-
-## 📂 Structure
-- `/frontend`: Pygame command-center application and assets.
-- `/backend`: WiFi sensing logic and ESP32 firmware (In Progress).
-- `/.memory`: Project context and AI agent instructions.
+## **The Team**
+Developed for **LA Hacks 2026**.
