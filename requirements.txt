@@ -12,3 +12,4 @@ matplotlib
 # MongoDB Atlas logging (backend/mongo_logger.py)
 pymongo
 python-dotenv
+google-genai

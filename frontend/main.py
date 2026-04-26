@@ -15,6 +15,7 @@ import pygame
 # Ensure backend can be imported when running from frontend/ or the repo root.
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.mock_service import RuViewMockService
+from backend.proximity import ESP32SerialProximityReader
 
 
 WIDTH = 800
@@ -66,23 +67,51 @@ class BackendManager:
         self.backend_url = "http://localhost:8000"
         self.last_pose = None
         self.nodes = []
+        self.proximity_nodes = []
         self.status = self.mock.get_system_status()
+        self.proximity_reader = None
+        proximity_port = os.environ.get("RUVIEW_PROXIMITY_SERIAL")
+        if proximity_port:
+            self.proximity_reader = ESP32SerialProximityReader(proximity_port)
+            self.proximity_reader.start()
 
     def update(self):
         if self.use_mock:
             self.last_pose = self.mock.get_latest_pose()
-            self.nodes = self.mock.get_nodes()
             self.status = self.mock.get_system_status()
+            if self.proximity_reader:
+                self.proximity_nodes = self.proximity_reader.snapshot()
+                self.nodes = self._nodes_from_proximity()
+            else:
+                self.proximity_nodes = self.mock.get_proximity_nodes()
+                self.nodes = self._nodes_from_proximity()
 
     def get_logs(self):
         average_fps = self.status["data"]["performance"]["average_fps"]
         online_nodes = len([node for node in self.nodes if node["status"] == "ONLINE"])
+        near_nodes = len([node for node in self.proximity_nodes if node["proximity_zone"] == "near"])
         return [
             f"[SYNC] {time.strftime('%H:%M:%S')} - Model: {average_fps} FPS",
             f"[NODE] Online Count: {online_nodes}",
+            f"[PROX] C6 near S3: {near_nodes}/{len(self.proximity_nodes)}",
             "[CSI] Multi-path interference low",
             "[POSE] RunPod stream target active",
-            "[TRACK] Awaiting processed DensePose frame",
+        ]
+
+    def _nodes_from_proximity(self):
+        return [
+            {"name": "S3_MAIN", "status": "ONLINE", "rssi": "0dBm"},
+            *[
+                {
+                    "name": node["name"],
+                    "status": node["status"],
+                    "rssi": f"{node['rssi_dbm']}dBm",
+                    "proximity_zone": node["proximity_zone"],
+                    "estimated_distance_m": node["estimated_distance_m"],
+                    "confidence": node["confidence"],
+                }
+                for node in self.proximity_nodes
+            ],
         ]
 
 
@@ -477,14 +506,25 @@ class RuViewApp:
 
     def draw_node_panel(self, rect):
         self.draw_panel(rect, "NODES", GREEN)
-        y = rect.y + 42
+        y = rect.y + 38
         for node in self.backend.nodes:
+            if y > rect.bottom - 96:
+                break
             status_color = GREEN if node["status"] == "ONLINE" else RED
             self.draw_text(self.screen, node["name"], (rect.x + 10, y), TEXT)
-            self.draw_text(self.screen, f"* {node['status']}", (rect.x + 18, y + 20), status_color, self.small_font)
-            self.draw_text(self.screen, f"RSSI: {node['rssi']}", (rect.x + 18, y + 38), MUTED, self.small_font)
-            pygame.draw.line(self.screen, PANEL_BORDER, (rect.x + 10, y + 60), (rect.right - 10, y + 60))
-            y += 72
+            self.draw_text(self.screen, f"* {node['status']}", (rect.x + 18, y + 18), status_color, self.small_font)
+            self.draw_text(self.screen, node["rssi"], (rect.x + 98, y + 18), MUTED, self.small_font)
+            if "proximity_zone" in node:
+                prox = node["proximity_zone"].upper()
+                distance = node["estimated_distance_m"]
+                self.draw_text(self.screen, f"PROX: {prox} | ~{distance}m", (rect.x + 18, y + 34), self.proximity_color(node["proximity_zone"]), self.small_font)
+                separator_y = y + 50
+                row_height = 58
+            else:
+                separator_y = y + 42
+                row_height = 50
+            pygame.draw.line(self.screen, PANEL_BORDER, (rect.x + 10, separator_y), (rect.right - 10, separator_y))
+            y += row_height
 
         self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 78, rect.width - 20, 28), "SCAN MESH", "noop")
         self.draw_button(pygame.Rect(rect.x + 10, rect.bottom - 40, rect.width - 20, 28), "SYSTEM REBOOT", "noop")
@@ -523,6 +563,7 @@ class RuViewApp:
         scaled_rect.y = rect.y + 64
         self.screen.blit(scaled, scaled_rect)
         pygame.draw.rect(self.screen, (0, 180, 216), scaled_rect, 1)
+        self.draw_proximity_markers(scaled_rect)
         self.buttons.append(Button(scaled_rect, "map", "toggle_minimap"))
 
     def draw_telemetry_panel(self, rect):
@@ -547,6 +588,7 @@ class RuViewApp:
         scaled_rect.center = (WIDTH // 2, 265)
         self.screen.blit(scaled, scaled_rect)
         pygame.draw.rect(self.screen, PANEL_BORDER, scaled_rect, 1)
+        self.draw_proximity_markers(scaled_rect, expanded=True)
 
     def fit_surface(self, surface, max_width, max_height):
         width, height = surface.get_size()
@@ -565,6 +607,37 @@ class RuViewApp:
         self.screen.blit(text_surface, text_surface.get_rect(center=rect.center))
         if action != "noop":
             self.buttons.append(Button(rect, label, action, value))
+
+    def draw_proximity_markers(self, map_rect, expanded=False):
+        s3_pos = (map_rect.centerx, map_rect.centery)
+        s3_radius = 6 if expanded else 4
+        pygame.draw.circle(self.screen, CYAN, s3_pos, s3_radius)
+        self.draw_text(self.screen, "S3", (s3_pos[0] + 7, s3_pos[1] - 7), CYAN, self.small_font)
+
+        for node in self.backend.proximity_nodes:
+            if node.get("floor", 0) != self.active_floor_index:
+                continue
+            position = node.get("map_position", {"x": 0.5, "y": 0.5})
+            marker_pos = (
+                int(map_rect.x + position["x"] * map_rect.width),
+                int(map_rect.y + position["y"] * map_rect.height),
+            )
+            color = self.proximity_color(node["proximity_zone"])
+            radius = 7 if expanded else 4
+            pygame.draw.line(self.screen, color, s3_pos, marker_pos, 1)
+            pygame.draw.circle(self.screen, color, marker_pos, radius)
+            pygame.draw.circle(self.screen, BG, marker_pos, max(1, radius - 3))
+            if expanded:
+                label = f"{node['name']} {node['proximity_zone'].upper()} {node['estimated_distance_m']}m"
+                self.draw_text(self.screen, label, (marker_pos[0] + 10, marker_pos[1] - 8), color, self.small_font)
+
+    def proximity_color(self, zone):
+        return {
+            "near": GREEN,
+            "medium": AMBER,
+            "far": MUTED,
+            "lost": RED,
+        }.get(zone, MUTED)
 
     def draw_text(self, surface, text, pos, color=TEXT, font=None):
         font = font or self.font
