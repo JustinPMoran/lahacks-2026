@@ -1434,7 +1434,7 @@ class RuViewApp:
         self.draw_text(self.screen, f"{floor['label']} | {floor['detail']}", (20, 16), floor["color"], self.large_font)
         for index in range(len(FLOOR_MAPS)):
             self.draw_button(pygame.Rect(285 + index * 30, 16, 22, 22), str(index + 1), "floor", index, compact=True)
-        self.draw_button(pygame.Rect(665, 14, 110, 30), "MINIMIZE", "toggle_minimap")
+        self.draw_button(pygame.Rect(625, 14, 110, 30), "MINIMIZE", "toggle_minimap")
 
         # Leave room for the stats panel on the right when a target is locked
         max_w = 540 if (self.selected_target and self.selected_target["floor_idx"] == self.active_floor_index) else 760
